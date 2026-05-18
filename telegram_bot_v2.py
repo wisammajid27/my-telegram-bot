@@ -2,6 +2,23 @@
 """
 Telegram Bot - Complete Version with All Features
 """
+import os
+from flask import Flask
+from threading import Thread
+
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is Alive!"
+
+def run():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
 
 import logging
 import os
@@ -481,6 +498,7 @@ if __name__ == '__main__':
     app.add_handler(MessageHandler(filters.Regex(r'وجهة|الوجهة'), start))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+keep_alive()
 
     print("🚀 البوت يعمل الآن مع جميع الميزات!")
     app.run_polling()
