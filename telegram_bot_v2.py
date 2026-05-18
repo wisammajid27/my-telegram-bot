@@ -244,11 +244,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         families = get_user_families(user_id)
         keyboard = [[InlineKeyboardButton(f"👪 {f['family_name']}", callback_data=f"family_{f['id']}")] for f in families]
+        keyboard.append([InlineKeyboardButton("🧮 حساب سريع بدون عائلة", callback_data="quick_calc")])
         keyboard.append([InlineKeyboardButton("➕ إنشاء عائلة جديدة", callback_data="new_family")])
         keyboard.append([InlineKeyboardButton("🗑️ مسح قيد العائلة", callback_data="delete_family")])
         keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_dest")])
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.message.edit_text("👨‍👩‍👧‍👦 **اختر العائلة**:", reply_markup=reply_markup, parse_mode='Markdown')
+        await query.message.edit_text("👨‍👩‍👧‍👦 **اختر العائلة أو اختر الحساب السريع**:", reply_markup=reply_markup, parse_mode='Markdown')
+
+    elif data == "quick_calc":
+        context.user_data['step'] = "quick_calc"
+        await query.message.edit_text("🧮 **قسم الحساب السريع**\n\nأدخل تاريخ الميلاد مباشرة لحساب السعر فوراً:\nمثال: `15-05-1995`")
 
     elif data == "new_family":
         context.user_data['step'] = "create_family"
@@ -316,7 +321,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['selected_family'] = family_id
         passengers = get_family_passengers(family_id)
         if not passengers:
-            await query.message.edit_text("⚠️ لا يوجد أفراد in هذه العائلة!")
+            await query.message.edit_text("⚠️ لا يوجد أفراد في هذه العائلة!")
             return
         context.user_data['selected_members_to_delete'] = []
         keyboard = [[InlineKeyboardButton(f"☐ {p['name']}", callback_data=f"del_member_{p['id']}")] for p in passengers]
@@ -452,11 +457,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['step'] = "choose_family"
         families = get_user_families(user_id)
         keyboard = [[InlineKeyboardButton(f"👪 {f['family_name']}", callback_data=f"family_{f['id']}")] for f in families]
+        keyboard.append([InlineKeyboardButton("🧮 حساب سريع بدون عائلة", callback_data="quick_calc")])
         keyboard.append([InlineKeyboardButton("➕ إنشاء عائلة جديدة", callback_data="new_family")])
         keyboard.append([InlineKeyboardButton("🗑️ مسح قيد العائلة", callback_data="delete_family")])
         keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_dest")])
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.message.edit_text("👨‍👩‍👧‍👦 **اختر العائلة**:", reply_markup=reply_markup, parse_mode='Markdown')
+        await query.message.edit_text("👨‍👩‍👧‍👦 **اختر العائلة أو اختر الحساب السريع**:", reply_markup=reply_markup, parse_mode='Markdown')
 
     elif data == "back_to_dest":
         await start(update, context)
@@ -466,7 +472,47 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     step = context.user_data.get('step')
     user_id = update.effective_user.id
 
-    if step == "create_family":
+    if step == "quick_calc":
+        try:
+            # التحقق من صحة تاريخ الميلاد المدخل
+            dob = datetime.strptime(text, "%d-%m-%Y")
+            today = datetime.now()
+            age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+            
+            price_base = context.user_data.get('selected_price')
+            dest_name = context.user_data.get('selected_dest', 'غير محددة')
+            
+            rules = PRICES_RULES.get(price_base, {})
+            if 7 <= age <= 12:
+                price = rules.get("7-12", price_base)
+            elif 13 <= age <= 26:
+                price = rules.get("13-26", price_base)
+            elif 60 <= age <= 64:
+                price = rules.get("60-64", price_base)
+            else:
+                price = price_base
+            
+            final_price = price + OFFICE_PROFIT
+            
+            response = f"📍 **الوجهة:** {dest_name}\n"
+            response += f"🧮 **نتيجة الحساب السريع:**\n\n"
+            response += f"🗓️ تاريخ الميلاد: `{text}`\n"
+            response += f"👤 العمر المحسوب: {age} سنة\n"
+            response += f"💰 السعر الصافي مع أرباح المكتب:\n"
+            response += f"**المجموع: {final_price} ليرة تركي**"
+            
+            # زر لإعادة الحساب أو الرجوع للرئيسية
+            keyboard = [
+                [InlineKeyboardButton("🧮 حساب تاريخ آخر", callback_data="quick_calc")],
+                [InlineKeyboardButton("⬅️ عودة لقائمة العوائل", callback_data="back_to_family_list")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text(response, reply_markup=reply_markup, parse_mode='Markdown')
+            
+        except ValueError:
+            await update.message.reply_text("❌ التنسيق خاطئ! يرجى إدخال التاريخ بالطريقة التالية:\nمثال: `15-05-1995`")
+
+    elif step == "create_family":
         family_id = create_family(user_id, text)
         if family_id:
             await update.message.reply_text(f"✅ تم إنشاء العائلة: **{text}**")
