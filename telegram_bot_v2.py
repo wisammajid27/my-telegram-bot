@@ -263,7 +263,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['selected_families_to_delete'] = []
         keyboard = [[InlineKeyboardButton(f"☐ {f['family_name']}", callback_data=f"del_family_{f['id']}")] for f in families]
         keyboard.append([InlineKeyboardButton("🗑️ مسح العائلات المحددة", callback_data="confirm_delete_family")])
-        keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family")])
+        keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family_list")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.message.edit_text("☐ اختر العائلات المراد مسحها:", reply_markup=reply_markup, parse_mode='Markdown')
 
@@ -283,7 +283,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             emoji = "✅" if is_selected else "☐"
             keyboard.append([InlineKeyboardButton(f"{emoji} {f['family_name']}", callback_data=f"del_family_{f['id']}")])
         keyboard.append([InlineKeyboardButton("🗑️ مسح العائلات المحددة", callback_data="confirm_delete_family")])
-        keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family")])
+        keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family_list")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.message.edit_text(f"✅ تم تحديد {len(selected)} عائلة", reply_markup=reply_markup, parse_mode='Markdown')
 
@@ -306,7 +306,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton("➕ إضافة فرد جديد", callback_data=f"add_member_{family_id}")])
         keyboard.append([InlineKeyboardButton("🗑️ حذف فرد من العائلة", callback_data=f"delete_member_{family_id}")])
         keyboard.append([InlineKeyboardButton("💰 حساب السعر للمختارين", callback_data="calculate_selected")])
-        keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family")])
+        keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family_list")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.message.edit_text("☐ اختر الأفراد المطلوبين:", reply_markup=reply_markup, parse_mode='Markdown')
 
@@ -316,12 +316,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['selected_family'] = family_id
         passengers = get_family_passengers(family_id)
         if not passengers:
-            await query.message.edit_text("⚠️ لا يوجد أفراد في هذه العائلة!")
+            await query.message.edit_text("⚠️ لا يوجد أفراد in هذه العائلة!")
             return
         context.user_data['selected_members_to_delete'] = []
         keyboard = [[InlineKeyboardButton(f"☐ {p['name']}", callback_data=f"del_member_{p['id']}")] for p in passengers]
         keyboard.append([InlineKeyboardButton("🗑️ مسح الأفراد المحددين", callback_data="confirm_delete_member")])
-        keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family")])
+        keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family_list")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.message.edit_text("☐ اختر الأفراد المراد مسحهم:", reply_markup=reply_markup, parse_mode='Markdown')
 
@@ -342,7 +342,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             emoji = "✅" if is_selected else "☐"
             keyboard.append([InlineKeyboardButton(f"{emoji} {p['name']}", callback_data=f"del_member_{p['id']}")])
         keyboard.append([InlineKeyboardButton("🗑️ مسح الأفراد المحددين", callback_data="confirm_delete_member")])
-        keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family")])
+        keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family_list")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.message.edit_text(f"✅ تم تحديد {len(selected)} فرد", reply_markup=reply_markup, parse_mode='Markdown')
 
@@ -361,7 +361,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton("➕ إضافة فرد جديد", callback_data=f"add_member_{family_id}")])
         keyboard.append([InlineKeyboardButton("🗑️ حذف فرد من العائلة", callback_data=f"delete_member_{family_id}")])
         keyboard.append([InlineKeyboardButton("💰 حساب السعر للمختارين", callback_data="calculate_selected")])
-        keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family")])
+        keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family_list")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.callback_query.message.edit_text("☐ اختر الأفراد المطلوبين:", reply_markup=reply_markup, parse_mode='Markdown')
 
@@ -397,7 +397,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard.append([InlineKeyboardButton("➕ إضافة فرد جديد", callback_data=f"add_member_{family_id}")])
             keyboard.append([InlineKeyboardButton("🗑️ حذف فرد من العائلة", callback_data=f"delete_member_{family_id}")])
             keyboard.append([InlineKeyboardButton("💰 حساب السعر للمختارين", callback_data="calculate_selected")])
-            keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family")])
+            keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family_list")])
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.message.edit_text(f"✅ تم تحديد {len(selected)} فرد", reply_markup=reply_markup, parse_mode='Markdown')
 
@@ -447,17 +447,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['step'] = "add_member"
         await query.message.edit_text("👤 أدخل اسم الشخص + تاريخ الميلاد:\nمثال: `أحمد 15-05-1995`")
 
-    elif data == "back_to_family":
-        family_id = context.user_data.get('selected_family')
-        if family_id:
-            passengers = get_family_passengers(family_id)
-            keyboard = [[InlineKeyboardButton(f"☐ {p['name']}", callback_data=f"toggle_{p['id']}")] for p in passengers]
-            keyboard.append([InlineKeyboardButton("➕ إضافة فرد جديد", callback_data=f"add_member_{family_id}")])
-            keyboard.append([InlineKeyboardButton("🗑️ حذف فرد من العائلة", callback_data=f"delete_member_{family_id}")])
-            keyboard.append([InlineKeyboardButton("💰 حساب السعر للمختارين", callback_data="calculate_selected")])
-            keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family")])
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.message.edit_text("☐ اختر الأفراد المطلوبين:", reply_markup=reply_markup, parse_mode='Markdown')
+    # ========== قسم العودة المصلح والمفصول تماماً ==========
+    elif data == "back_to_family_list":
+        context.user_data['step'] = "choose_family"
+        families = get_user_families(user_id)
+        keyboard = [[InlineKeyboardButton(f"👪 {f['family_name']}", callback_data=f"family_{f['id']}")] for f in families]
+        keyboard.append([InlineKeyboardButton("➕ إنشاء عائلة جديدة", callback_data="new_family")])
+        keyboard.append([InlineKeyboardButton("🗑️ مسح قيد العائلة", callback_data="delete_family")])
+        keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_dest")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.message.edit_text("👨‍👩‍👧‍👦 **اختر العائلة**:", reply_markup=reply_markup, parse_mode='Markdown')
 
     elif data == "back_to_dest":
         await start(update, context)
@@ -489,7 +488,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard.append([InlineKeyboardButton("➕ إضافة فرد جديد", callback_data=f"add_member_{family_id}")])
             keyboard.append([InlineKeyboardButton("🗑️ حذف فرد من العائلة", callback_data=f"delete_member_{family_id}")])
             keyboard.append([InlineKeyboardButton("💰 حساب السعر للمختارين", callback_data="calculate_selected")])
-            keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family")])
+            keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family_list")])
             reply_markup = InlineKeyboardMarkup(keyboard)
             await update.message.reply_text("☐ اختر الأفراد المطلوبين:", reply_markup=reply_markup, parse_mode='Markdown')
         except:
