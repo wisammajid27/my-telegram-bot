@@ -1,63 +1,73 @@
 #!/usr/bin/env python3
 """
-Telegram Bot - Complete Version with All Features
+Telegram Bot - Complete Version with PostgreSQL Support
 """
 import os
+import logging
+from datetime import datetime
 from flask import Flask
 from threading import Thread
 
-app = Flask('')
+# مكتبة الاتصال بقاعدة بيانات PostgreSQL
+import psycopg2
+from psycopg2.extras import DictCursor
 
-@app.route('/')
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+
+# ====================== سيرفر Flask لإبقاء البوت حياً ======================
+app_flask = Flask('')
+
+@app_flask.route('/')
 def home():
     return "Bot is Alive!"
 
 def run():
     port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+    app_flask.run(host='0.0.0.0', port=port)
 
 def keep_alive():
     t = Thread(target=run)
     t.start()
 
-import logging
-import os
-import sqlite3
-from datetime import datetime
+# ====================== قاعدة البيانات (PostgreSQL) ======================
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
-
-# ====================== قاعدة البيانات ======================
 def get_db_connection():
-    conn = sqlite3.connect('families.db')
-    conn.row_factory = sqlite3.Row
+    # فتح اتصال آمن ومشفر مع قاعدة بيانات Render
+    conn = psycopg2.connect(DATABASE_URL, sslmode='require')
     return conn
 
 def init_db():
     conn = get_db_connection()
-    conn.executescript('''
+    cur = conn.cursor()
+    # إنشاء الجداول إذا لم تكن موجودة في السيرفر الخارجي
+    cur.execute('''
         CREATE TABLE IF NOT EXISTS families (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT,
             family_name TEXT,
             created_at TEXT
         );
+    ''')
+    cur.execute('''
         CREATE TABLE IF NOT EXISTS passengers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             family_id INTEGER,
-            user_id INTEGER,
+            user_id BIGINT,
             name TEXT,
             birth_date TEXT,
             created_at TEXT
         );
     ''')
     conn.commit()
+    cur.close()
     conn.close()
 
+# تهيئة الجداول تلقائياً عند التشغيل لأول مرة
 init_db()
 
-# ====================== البيانات ======================
+# ====================== البيانات الثابتة والقوانين ======================
 OFFICE_PROFIT = 85
 
 ROUTES = {
@@ -126,54 +136,69 @@ def format_time_with_period(time_str: str) -> str:
     except:
         return time_str
 
-# ====================== دوال العائلات ======================
+# ====================== دوال العائلات المعدلة لـ PostgreSQL ======================
 def get_user_families(user_id):
     conn = get_db_connection()
-    families = conn.execute("SELECT * FROM families WHERE user_id = ? ORDER BY family_name", (user_id,)).fetchall()
+    cur = conn.cursor(cursor_factory=DictCursor)
+    cur.execute("SELECT * FROM families WHERE user_id = %s ORDER BY family_name", (user_id,))
+    families = cur.fetchall()
+    cur.close()
     conn.close()
     return families
 
 def get_family_passengers(family_id):
     conn = get_db_connection()
-    passengers = conn.execute("SELECT * FROM passengers WHERE family_id = ? ORDER BY name", (family_id,)).fetchall()
+    cur = conn.cursor(cursor_factory=DictCursor)
+    cur.execute("SELECT * FROM passengers WHERE family_id = %s ORDER BY name", (family_id,))
+    passengers = cur.fetchall()
+    cur.close()
     conn.close()
     return passengers
 
 def create_family(user_id, family_name):
     conn = get_db_connection()
+    cur = conn.cursor()
     try:
-        conn.execute("INSERT INTO families (user_id, family_name, created_at) VALUES (?, ?, ?)",
+        cur.execute("INSERT INTO families (user_id, family_name, created_at) VALUES (%s, %s, %s) RETURNING id",
                      (user_id, family_name, datetime.now().isoformat()))
+        family_id = cur.fetchone()[0]
         conn.commit()
-        return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        return family_id
     except:
         return None
     finally:
+        cur.close()
         conn.close()
 
 def add_passenger_to_family(family_id, user_id, name, birth_date):
     conn = get_db_connection()
-    conn.execute("INSERT INTO passengers (family_id, user_id, name, birth_date, created_at) VALUES (?, ?, ?, ?, ?)",
+    cur = conn.cursor()
+    cur.execute("INSERT INTO passengers (family_id, user_id, name, birth_date, created_at) VALUES (%s, %s, %s, %s, %s)",
                  (family_id, user_id, name, birth_date, datetime.now().isoformat()))
     conn.commit()
+    cur.close()
     conn.close()
 
 def delete_families(family_ids):
     conn = get_db_connection()
+    cur = conn.cursor()
     for fid in family_ids:
-        conn.execute("DELETE FROM families WHERE id = ?", (fid,))
-        conn.execute("DELETE FROM passengers WHERE family_id = ?", (fid,))
+        cur.execute("DELETE FROM families WHERE id = %s", (fid,))
+        cur.execute("DELETE FROM passengers WHERE family_id = %s", (fid,))
     conn.commit()
+    cur.close()
     conn.close()
 
 def delete_passengers(passenger_ids):
     conn = get_db_connection()
+    cur = conn.cursor()
     for pid in passenger_ids:
-        conn.execute("DELETE FROM passengers WHERE id = ?", (pid,))
+        cur.execute("DELETE FROM passengers WHERE id = %s", (pid,))
     conn.commit()
+    cur.close()
     conn.close()
 
-# ====================== دوال البوت ======================
+# ====================== دوال البوت الأساسية ======================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton(dest, callback_data=f"dest_{dest}")] for dest in ROUTES.keys()]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -184,14 +209,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.callback_query.message.edit_text(text, reply_markup=reply_markup, parse_mode='Markdown')
 
-
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
     data = query.data
 
-    # ========== اختيار الوجهة ==========
     if data.startswith("dest_"):
         dest_name = data[5:]
         context.user_data['selected_dest'] = dest_name
@@ -214,7 +237,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.message.edit_text(f"📍 **الوجهة:** {dest_name}\n\nاختر المسار:", reply_markup=reply_markup, parse_mode='Markdown')
 
-    # ========== اختيار المسار ==========
     elif data.startswith("price_"):
         price = int(data[6:])
         context.user_data['selected_price'] = price
@@ -228,12 +250,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.message.edit_text("👨‍👩‍👧‍👦 **اختر العائلة**:", reply_markup=reply_markup, parse_mode='Markdown')
 
-    # ========== إنشاء عائلة جديدة ==========
     elif data == "new_family":
         context.user_data['step'] = "create_family"
         await query.message.edit_text("👪 أدخل اسم العائلة:")
 
-    # ========== مسح قيد العائلة ==========
     elif data == "delete_family":
         families = get_user_families(user_id)
         if not families:
@@ -277,7 +297,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.edit_text(f"✅ تم مسح {len(selected)} عائلة بنجاح!")
         await start(update, context)
 
-    # ========== اختيار العائلة ==========
     elif data.startswith("family_"):
         family_id = int(data.split("_")[1])
         context.user_data['selected_family'] = family_id
@@ -291,7 +310,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.message.edit_text("☐ اختر الأفراد المطلوبين:", reply_markup=reply_markup, parse_mode='Markdown')
 
-    # ========== حذف فرد من العائلة ==========
     elif data.startswith("delete_member_"):
         family_id = int(data.split("_")[2])
         context.user_data['delete_mode'] = 'member'
@@ -347,13 +365,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.callback_query.message.edit_text("☐ اختر الأفراد المطلوبين:", reply_markup=reply_markup, parse_mode='Markdown')
 
-    # ========== اختيار/إلغاء اختيار فرد ==========
     elif data.startswith("toggle_"):
         passenger_id = int(data.split("_")[1])
         selected = context.user_data.get('selected_passengers', [])
         
         conn = get_db_connection()
-        p = conn.execute("SELECT * FROM passengers WHERE id = ?", (passenger_id,)).fetchone()
+        cur = conn.cursor(cursor_factory=DictCursor)
+        cur.execute("SELECT * FROM passengers WHERE id = %s", (passenger_id,))
+        p = cur.fetchone()
+        cur.close()
         conn.close()
         
         if p:
@@ -369,10 +389,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             family_id = context.user_data['selected_family']
             passengers = get_family_passengers(family_id)
             keyboard = []
-            for p in passengers:
-                is_selected = any(sp['id'] == p['id'] for sp in selected)
+            for p_item in passengers:
+                is_selected = any(sp['id'] == p_item['id'] for sp in selected)
                 emoji = "✅" if is_selected else "☐"
-                keyboard.append([InlineKeyboardButton(f"{emoji} {p['name']}", callback_data=f"toggle_{p['id']}")])
+                keyboard.append([InlineKeyboardButton(f"{emoji} {p_item['name']}", callback_data=f"toggle_{p_item['id']}")])
             
             keyboard.append([InlineKeyboardButton("➕ إضافة فرد جديد", callback_data=f"add_member_{family_id}")])
             keyboard.append([InlineKeyboardButton("🗑️ حذف فرد من العائلة", callback_data=f"delete_member_{family_id}")])
@@ -381,7 +401,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.message.edit_text(f"✅ تم تحديد {len(selected)} فرد", reply_markup=reply_markup, parse_mode='Markdown')
 
-    # ========== حساب السعر ==========
     elif data == "calculate_selected":
         selected = context.user_data.get('selected_passengers', [])
         if not selected:
@@ -422,14 +441,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await query.message.edit_text(response, parse_mode='Markdown')
 
-    # ========== إضافة فرد جديد ==========
     elif data.startswith("add_member_"):
         family_id = int(data.split("_")[2])
         context.user_data['selected_family'] = family_id
         context.user_data['step'] = "add_member"
         await query.message.edit_text("👤 أدخل اسم الشخص + تاريخ الميلاد:\nمثال: `أحمد 15-05-1995`")
 
-    # ========== العودة ==========
     elif data == "back_to_family":
         family_id = context.user_data.get('selected_family')
         if family_id:
@@ -445,7 +462,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "back_to_dest":
         await start(update, context)
 
-
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     step = context.user_data.get('step')
@@ -459,7 +475,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['step'] = "add_member"
             await update.message.reply_text("👤 أدخل اسم الشخص + تاريخ الميلاد:\nمثال: `أحمد 15-05-1995`")
         else:
-            await update.message.reply_text("❌ اسم العائلة موجود مسبقاً.")
+            await update.message.reply_text("❌ حدث خطأ أثناء إنشاء العائلة.")
 
     elif step == "add_member":
         try:
@@ -485,21 +501,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("⚠️ استخدم الأزرار أعلاه")
 
-
-# ====================== تشغيل البوت ======================
+# ====================== تشغيل البوت والخدمات ======================
 if __name__ == '__main__':
     TOKEN = os.getenv("TELEGRAM_TOKEN", "8242305081:AAFvDKxIf8QjKxyYoC3E8IeslgrLHtb1_i0")
     
     logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
     
-    app = Application.builder().token(TOKEN).build()
+    bot_app = Application.builder().token(TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.Regex(r'وجهة|الوجهة'), start))
-    app.add_handler(CallbackQueryHandler(handle_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    bot_app.add_handler(CommandHandler("start", start))
+    bot_app.add_handler(MessageHandler(filters.Regex(r'وجهة|الوجهة'), start))
+    bot_app.add_handler(CallbackQueryHandler(handle_callback))
+    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
-    # تشغيل السيرفر الوهمي محاذي تماماً لباقي الأوامر
+    # تشغيل سيرفر Flask بالخلفية لإرضاء بورتات Render المجانية
     keep_alive()
-    print("🚀 البوت يعمل الآن مع جميع الميزات!")
-    app.run_polling()
+    
+    print("🚀 البوت يعمل الآن مع قاعدة بيانات PostgreSQL بنجاح!")
+    bot_app.run_polling()
