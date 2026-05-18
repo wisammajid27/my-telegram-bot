@@ -494,12 +494,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             final_price = price + OFFICE_PROFIT
             
-            response = f"📍 **الوجهة:** {dest_name}\n"
-            response += f"🧮 **نتيجة الحساب السريع:**\n\n"
-            response += f"🗓️ تاريخ الميلاد: `{text}`\n"
-            response += f"👤 العمر المحسوب: {age} سنة\n"
-            response += f"💰 السعر الصافي مع أرباح المكتب:\n"
-            response += f"**المجموع: {final_price} ليرة تركي**"
+            # التعديل الجديد: إخراج النتيجة بنفس مظهر الحساب العادي بالمليمتر
+            response = f"📍 **الوجهة:** {dest_name}\n\n"
+            response += f"📊 **نتيجة الحساب**\n\n"
+            response += f"👤 زبون سريع | {text} | العمر: {age} | **{final_price}** ليرة\n\n"
+            response += f"💰 **المجموع الكلي: {final_price} ليرة تركي**"
             
             # زر لإعادة الحساب أو الرجوع للرئيسية
             keyboard = [
