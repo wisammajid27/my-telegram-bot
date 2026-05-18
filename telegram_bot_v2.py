@@ -498,6 +498,8 @@ if __name__ == '__main__':
     app.add_handler(MessageHandler(filters.Regex(r'وجهة|الوجهة'), start))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-keep_alive()
-print("🚀 البوت يعمل الآن مع جميع الميزات!")
+    
+    # تشغيل السيرفر الوهمي محاذي تماماً لباقي الأوامر
+    keep_alive()
+    print("🚀 البوت يعمل الآن مع جميع الميزات!")
     app.run_polling()
