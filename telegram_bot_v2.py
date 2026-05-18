@@ -499,6 +499,5 @@ if __name__ == '__main__':
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 keep_alive()
-
-    print("🚀 البوت يعمل الآن مع جميع الميزات!")
+print("🚀 البوت يعمل الآن مع جميع الميزات!")
     app.run_polling()
