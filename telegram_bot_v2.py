@@ -429,6 +429,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 dob = parse_birth_date(p['birth_date'])
                 age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
                 
+                if age < 7:
+                    results.append(f"👶 {p['name']} | {p['birth_date']} | العمر: {age} | **مجاناً** (لا يحتاج تذكرة)")
+                    continue
+                
                 rules = PRICES_RULES.get(price_base, {})
                 if 7 <= age <= 12:
                     price = rules.get("7-12", price_base)
@@ -485,20 +489,25 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             dest_name = context.user_data.get('selected_dest', 'غير محددة')
             
             rules = PRICES_RULES.get(price_base, {})
-            if 7 <= age <= 12:
-                price = rules.get("7-12", price_base)
-            elif 13 <= age <= 26:
-                price = rules.get("13-26", price_base)
-            elif 60 <= age <= 64:
-                price = rules.get("60-64", price_base)
+            if age < 7:
+                response = f"📍 **الوجهة:** {dest_name}\n\n📊 **نتيجة الحساب**\n\n"
+                response += f"👶 زبون سريع | {birth_display} | العمر: {age} | **مجاناً** (لا يحتاج تذكرة)\n\n"
+                response += f"💰 **المجموع الكلي: 0 ليرة تركي**"
             else:
-                price = price_base
-            
-            final_price = price + OFFICE_PROFIT
-            
-            response = f"📍 **الوجهة:** {dest_name}\n\n📊 **نتيجة الحساب**\n\n"
-            response += f"👤 زبون سريع | {birth_display} | العمر: {age} | **{final_price}** ليرة\n\n"
-            response += f"💰 **المجموع الكلي: {final_price} ليرة تركي**"
+                if 7 <= age <= 12:
+                    price = rules.get("7-12", price_base)
+                elif 13 <= age <= 26:
+                    price = rules.get("13-26", price_base)
+                elif 60 <= age <= 64:
+                    price = rules.get("60-64", price_base)
+                else:
+                    price = price_base
+                
+                final_price = price + OFFICE_PROFIT
+                
+                response = f"📍 **الوجهة:** {dest_name}\n\n📊 **نتيجة الحساب**\n\n"
+                response += f"👤 زبون سريع | {birth_display} | العمر: {age} | **{final_price}** ليرة\n\n"
+                response += f"💰 **المجموع الكلي: {final_price} ليرة تركي**"
             
             keyboard = [
                 [InlineKeyboardButton("🧮 حساب تاريخ آخر", callback_data="quick_calc")],
