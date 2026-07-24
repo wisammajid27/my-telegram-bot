@@ -4,7 +4,8 @@ Telegram Bot - Complete Version with PostgreSQL Support (Optimized)
 """
 import os
 import logging
-from datetime import datetime
+import calendar
+from datetime import date, datetime
 from flask import Flask
 from threading import Thread
 from contextlib import contextmanager
@@ -139,6 +140,25 @@ def parse_birth_date(date_str: str) -> datetime:
 
 def normalize_birth_date(date_str: str) -> str:
     return parse_birth_date(date_str).strftime("%d-%m-%Y")
+
+def calculate_railway_age(birth_date: datetime, today: date | None = None) -> int:
+    """Return the railway age: add one year only after a full month past the birthday."""
+    today = today or date.today()
+
+    def birthday_in(year: int) -> date:
+        day = min(birth_date.day, calendar.monthrange(year, birth_date.month)[1])
+        return date(year, birth_date.month, day)
+
+    this_year_birthday = birthday_in(today.year)
+    last_birthday = this_year_birthday if today >= this_year_birthday else birthday_in(today.year - 1)
+    actual_age = last_birthday.year - birth_date.year
+
+    next_month = last_birthday.month % 12 + 1
+    next_month_year = last_birthday.year + (last_birthday.month == 12)
+    first_month_day = min(last_birthday.day, calendar.monthrange(next_month_year, next_month)[1])
+    one_month_after_birthday = date(next_month_year, next_month, first_month_day)
+
+    return actual_age + (today >= one_month_after_birthday)
 
 def format_time_with_period(time_str: str) -> str:
     try:
@@ -420,14 +440,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         price_base = context.user_data.get('selected_price')
         dest_name = context.user_data.get('selected_dest', 'غير محددة')
         
-        today = datetime.now()
+        today = date.today()
         results = []
         grand_total = 0
         
         for p in selected:
             try:
                 dob = parse_birth_date(p['birth_date'])
-                age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+                age = calculate_railway_age(dob, today)
                 
                 if age < 7:
                     results.append(f"👶 {p['name']} | {p['birth_date']} | العمر: {age} | **مجاناً** (لا يحتاج تذكرة)")
@@ -482,8 +502,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             dob = parse_birth_date(text)
             birth_display = normalize_birth_date(text)
-            today = datetime.now()
-            age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+            today = date.today()
+            age = calculate_railway_age(dob, today)
             
             price_base = context.user_data.get('selected_price')
             dest_name = context.user_data.get('selected_dest', 'غير محددة')
