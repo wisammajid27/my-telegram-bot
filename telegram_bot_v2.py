@@ -189,8 +189,8 @@ def delete_families(family_ids):
     with get_db() as conn:
         with conn.cursor() as cur:
             for fid in family_ids:
-                cur.execute("DELETE FROM families WHERE id = %s", (fid,))
                 cur.execute("DELETE FROM passengers WHERE family_id = %s", (fid,))
+                cur.execute("DELETE FROM families WHERE id = %s", (fid,))
             conn.commit()
 
 def delete_passengers(passenger_ids):
@@ -559,7 +559,7 @@ if __name__ == '__main__':
     TOKEN = os.getenv("TELEGRAM_TOKEN")
     if not TOKEN:
         # التوكن الافتراضي الخاص بك في حال عدم تعيين المتغير البيئي للسرعة أثناء الفحص
-        TOKEN = "8242305081:AAFvDKxIf8QjKxyYoC3E8IeslgrLHtb1_i0"
+        raise RuntimeError("TELEGRAM_TOKEN is not configured")
         
     logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
     
