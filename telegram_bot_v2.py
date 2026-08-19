@@ -229,11 +229,29 @@ async def update_prices_command(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data['step'] = 'admin_update_prices'
     await update.message.reply_text(
         "💼 **تحديث الأسعار دفعة واحدة**\n\n"
-        "أرسل صفًا واحدًا لكل فئة تريد تحديثها بهذا الترتيب:\n"
+        "يمكنك إرسال سطر واحد أو عدة أسطر؛ كل سطر يحدّث فئة واحدة بهذا الترتيب:\n"
         "`رمز الفئة | السعر الكامل | 7-12 | 13-26 | 60-64 | +65`\n\n"
         "رمز الفئة هو الرقم الأول الثابت، حتى إذا تغير السعر الكامل لاحقًا.\n"
         "انسخ الجدول التالي وعدّل الأرقام فقط، ثم أرسله:\n\n"
         f"```\n{price_update_template()}\n```",
+        parse_mode='Markdown',
+    )
+
+
+async def update_one_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start a single-fare update, without requiring the whole price table."""
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ هذا الأمر مخصص لمدير البوت فقط.")
+        return
+
+    context.user_data['step'] = 'admin_update_one_price'
+    await update.message.reply_text(
+        "💼 **تحديث فئة سعر واحدة**\n\n"
+        "أرسل سطرًا واحدًا فقط بهذا الترتيب:\n"
+        "`رمز الفئة | السعر الكامل | 7-12 | 13-26 | 60-64 | +65`\n\n"
+        "مثال لتحديث فئة 370:\n"
+        "`370 | 400 | 200 | 340 | 340 | 200`\n\n"
+        "رمز الفئة هو الرقم الأول الأصلي، وليس السعر الجديد.",
         parse_mode='Markdown',
     )
 
@@ -694,13 +712,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     step = context.user_data.get('step')
     user_id = update.effective_user.id
 
-    if step == "admin_update_prices":
+    if step in ("admin_update_prices", "admin_update_one_price"):
         if not is_admin(user_id):
             context.user_data.pop('step', None)
             await update.message.reply_text("⛔ هذا الأمر مخصص لمدير البوت فقط.")
             return
         try:
             updates = parse_price_updates(text)
+            if step == "admin_update_one_price" and len(updates) != 1:
+                raise ValueError("أمر /update_price يقبل سطرًا واحدًا فقط")
             current_prices = get_fare_prices()
             preview = []
             for fare_code, prices in updates.items():
@@ -823,6 +843,7 @@ if __name__ == '__main__':
     bot_app = Application.builder().token(TOKEN).build()
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CommandHandler("update_prices", update_prices_command))
+    bot_app.add_handler(CommandHandler("update_price", update_one_price_command))
     bot_app.add_handler(MessageHandler(filters.Regex(r'وجهة|الوجهة'), start))
     bot_app.add_handler(CallbackQueryHandler(handle_callback))
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
