@@ -66,6 +66,17 @@ def init_db():
                     created_at TEXT
                 );
             ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS fare_prices (
+                    fare_code TEXT PRIMARY KEY,
+                    base_price INTEGER NOT NULL,
+                    price_7_12 INTEGER NOT NULL,
+                    price_13_26 INTEGER NOT NULL,
+                    price_60_64 INTEGER NOT NULL,
+                    price_65_plus INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+            ''')
             conn.commit()
 
 # تهيئة الجداول عند التشغيل
@@ -132,6 +143,141 @@ PRICES_RULES = {
     240: {"7-12": 120, "13-26": 205, "60-64": 205, "+65": 120},
     305: {"7-12": 155, "13-26": 260, "60-64": 260, "+65": 155},
 }
+
+# Only this Telegram account can change prices from inside the bot.
+ADMIN_USER_ID = 7209751288
+
+
+def fare_code_from_original_price(original_price: int) -> str:
+    """Return a stable fare identifier even after its displayed price changes."""
+    return f"fare_{original_price}"
+
+
+def init_fare_prices():
+    """Seed editable prices once, without overwriting prices saved by the admin."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            for base_price, rules in PRICES_RULES.items():
+                cur.execute('''
+                    INSERT INTO fare_prices
+                        (fare_code, base_price, price_7_12, price_13_26, price_60_64, price_65_plus, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (fare_code) DO NOTHING
+                ''', (
+                    fare_code_from_original_price(base_price), base_price,
+                    rules.get("7-12", base_price), rules.get("13-26", base_price),
+                    rules.get("60-64", base_price), rules.get("+65", base_price),
+                    datetime.now().isoformat(),
+                ))
+            conn.commit()
+
+
+def get_fare_prices():
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute('''
+                SELECT fare_code, base_price, price_7_12, price_13_26, price_60_64, price_65_plus
+                FROM fare_prices
+            ''')
+            return {row['fare_code']: dict(row) for row in cur.fetchall()}
+
+
+def save_fare_prices(updates):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            for fare_code, prices in updates.items():
+                cur.execute('''
+                    UPDATE fare_prices
+                    SET base_price = %s, price_7_12 = %s, price_13_26 = %s,
+                        price_60_64 = %s, price_65_plus = %s, updated_at = %s
+                    WHERE fare_code = %s
+                ''', (
+                    prices['base_price'], prices['price_7_12'], prices['price_13_26'],
+                    prices['price_60_64'], prices['price_65_plus'], datetime.now().isoformat(),
+                    fare_code,
+                ))
+            conn.commit()
+
+
+init_fare_prices()
+
+
+def is_admin(user_id: int) -> bool:
+    return user_id == ADMIN_USER_ID
+
+
+def price_update_template():
+    """Build a copyable price table for the administrator."""
+    fare_prices = get_fare_prices()
+    lines = []
+    for fare_code in sorted(fare_prices, key=lambda code: int(code.split('_')[1])):
+        fare = fare_prices[fare_code]
+        category = fare_code.split('_')[1]
+        lines.append(
+            f"{category} | {fare['base_price']} | {fare['price_7_12']} | "
+            f"{fare['price_13_26']} | {fare['price_60_64']} | {fare['price_65_plus']}"
+        )
+    return "\n".join(lines)
+
+
+async def update_prices_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start the administrator's one-message price update flow."""
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ هذا الأمر مخصص لمدير البوت فقط.")
+        return
+
+    context.user_data['step'] = 'admin_update_prices'
+    await update.message.reply_text(
+        "💼 **تحديث الأسعار دفعة واحدة**\n\n"
+        "أرسل صفًا واحدًا لكل فئة تريد تحديثها بهذا الترتيب:\n"
+        "`رمز الفئة | السعر الكامل | 7-12 | 13-26 | 60-64 | +65`\n\n"
+        "رمز الفئة هو الرقم الأول الثابت، حتى إذا تغير السعر الكامل لاحقًا.\n"
+        "انسخ الجدول التالي وعدّل الأرقام فقط، ثم أرسله:\n\n"
+        f"```\n{price_update_template()}\n```",
+        parse_mode='Markdown',
+    )
+
+
+def parse_price_updates(text: str):
+    """Validate the administrator's pasted price table."""
+    current_prices = get_fare_prices()
+    updates = {}
+
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = [part.strip() for part in line.split('|')]
+        if len(parts) != 6:
+            raise ValueError("كل سطر يجب أن يحتوي على 6 قيم مفصولة بعلامة |")
+
+        category = parts[0].replace('fare_', '')
+        if not category.isdigit():
+            raise ValueError("رمز الفئة يجب أن يكون رقمًا، مثل 370")
+        fare_code = f"fare_{category}"
+        if fare_code not in current_prices:
+            raise ValueError(f"فئة السعر {category} غير موجودة")
+        if fare_code in updates:
+            raise ValueError(f"فئة السعر {category} مكررة")
+
+        try:
+            values = [int(value) for value in parts[1:]]
+        except ValueError as error:
+            raise ValueError("يجب أن تكون جميع الأسعار أرقامًا صحيحة") from error
+        if any(value < 0 for value in values) or values[0] == 0:
+            raise ValueError("الأسعار يجب أن تكون موجبة، والسعر الكامل أكبر من صفر")
+
+        updates[fare_code] = {
+            'base_price': values[0],
+            'price_7_12': values[1],
+            'price_13_26': values[2],
+            'price_60_64': values[3],
+            'price_65_plus': values[4],
+        }
+
+    if not updates:
+        raise ValueError("لم يتم العثور على أي صف أسعار")
+    return updates
 
 BIRTH_DATE_FORMATS = ("%d-%m-%Y", "%d/%m/%Y", "%d.%m.%Y")
 
@@ -246,16 +392,41 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     data = query.data
 
-    if data.startswith("dest_"):
+    if data == "confirm_price_updates":
+        if not is_admin(user_id):
+            return
+        updates = context.user_data.get('pending_price_updates')
+        if not updates:
+            await query.message.edit_text("⚠️ انتهت جلسة التحديث. استخدم /update_prices مرة أخرى.")
+            return
+        save_fare_prices(updates)
+        context.user_data.pop('pending_price_updates', None)
+        context.user_data.pop('step', None)
+        await query.message.edit_text(f"✅ تم حفظ تحديث {len(updates)} فئة سعر بنجاح.")
+
+    elif data == "cancel_price_updates":
+        if not is_admin(user_id):
+            return
+        context.user_data.pop('pending_price_updates', None)
+        context.user_data.pop('step', None)
+        await query.message.edit_text("تم إلغاء تحديث الأسعار.")
+
+    elif data.startswith("dest_"):
         try:
             dest_name = list(ROUTES.keys())[int(data[5:])]
         except (ValueError, IndexError):
             return
         context.user_data['selected_dest'] = dest_name
         routes = ROUTES.get(dest_name, [])
+        fare_prices = get_fare_prices()
         
         keyboard = []
         for route in routes:
+            fare_code = fare_code_from_original_price(route['price'])
+            fare = fare_prices.get(fare_code)
+            if not fare:
+                logging.error(f"Missing fare configuration: {fare_code}")
+                continue
             formatted_times = [format_time_with_period(t) for t in route["times"]]
             if route.get("fast"): times_str = " ⚡ سريع"
             elif route.get("slow"): times_str = " 🐢 بطيء"
@@ -266,16 +437,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 times_display = " | ".join(formatted_times) + times_str
                 
-            button_text = f"{route['price']} ليرة - {times_display}"
-            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"price_{route['price']}")])
+            button_text = f"{fare['base_price']} ليرة - {times_display}"
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"price_{fare_code}")])
         
         keyboard.append([InlineKeyboardButton("⬅️_العودة", callback_data="back_to_dest")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.message.edit_text(f"📍 **الوجهة:** {dest_name}\n\nاختر المسار:", reply_markup=reply_markup, parse_mode='Markdown')
 
     elif data.startswith("price_"):
-        price = int(data[6:])
-        context.user_data['selected_price'] = price
+        fare_code = data[6:]
+        if fare_code not in get_fare_prices():
+            return
+        context.user_data['selected_fare_code'] = fare_code
         context.user_data['step'] = "choose_family"
         
         families = get_user_families(user_id)
@@ -449,7 +622,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.edit_text("⚠️ لم يتم تحديد أي فرد!")
             return
         
-        price_base = context.user_data.get('selected_price')
+        fare = get_fare_prices().get(context.user_data.get('selected_fare_code'))
+        if not fare:
+            await query.message.edit_text("⚠️ تعذر العثور على سعر هذه الرحلة. اختر الوجهة مرة أخرى.")
+            return
+        price_base = fare['base_price']
+        rules = {
+            "7-12": fare['price_7_12'],
+            "13-26": fare['price_13_26'],
+            "60-64": fare['price_60_64'],
+            "+65": fare['price_65_plus'],
+        }
         dest_name = context.user_data.get('selected_dest', 'غير محددة')
         
         today = date.today()
@@ -465,7 +648,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     results.append(f"👶 {p['name']} | {p['birth_date']} | العمر: {age} | **مجاناً** (لا يحتاج تذكرة)")
                     continue
                 
-                rules = PRICES_RULES.get(price_base, {})
                 if 7 <= age <= 12:
                     price = rules.get("7-12", price_base)
                 elif 13 <= age <= 26:
@@ -512,17 +694,56 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     step = context.user_data.get('step')
     user_id = update.effective_user.id
 
-    if step == "quick_calc":
+    if step == "admin_update_prices":
+        if not is_admin(user_id):
+            context.user_data.pop('step', None)
+            await update.message.reply_text("⛔ هذا الأمر مخصص لمدير البوت فقط.")
+            return
+        try:
+            updates = parse_price_updates(text)
+            current_prices = get_fare_prices()
+            preview = []
+            for fare_code, prices in updates.items():
+                old_price = current_prices[fare_code]['base_price']
+                category = fare_code.split('_')[1]
+                preview.append(f"فئة {category}: {old_price} ← {prices['base_price']}")
+
+            context.user_data['pending_price_updates'] = updates
+            context.user_data['step'] = 'admin_confirm_price_updates'
+            keyboard = [
+                [InlineKeyboardButton("✅ تأكيد الحفظ", callback_data="confirm_price_updates")],
+                [InlineKeyboardButton("✖️ إلغاء", callback_data="cancel_price_updates")],
+            ]
+            await update.message.reply_text(
+                "📋 **معاينة التحديث**\n\n" + "\n".join(preview) +
+                "\n\nهل تريد حفظ هذه الأسعار؟",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown',
+            )
+        except ValueError as error:
+            await update.message.reply_text(
+                f"❌ {error}\n\nأعد إرسال الجدول بالصيغة المطلوبة، أو استخدم /update_prices للبدء من جديد."
+            )
+
+    elif step == "quick_calc":
         try:
             dob = parse_birth_date(text)
             birth_display = normalize_birth_date(text)
             today = date.today()
             age = calculate_railway_age(dob, today)
             
-            price_base = context.user_data.get('selected_price')
+            fare = get_fare_prices().get(context.user_data.get('selected_fare_code'))
+            if not fare:
+                await update.message.reply_text("⚠️ تعذر العثور على سعر هذه الرحلة. اختر الوجهة مرة أخرى.")
+                return
+            price_base = fare['base_price']
+            rules = {
+                "7-12": fare['price_7_12'],
+                "13-26": fare['price_13_26'],
+                "60-64": fare['price_60_64'],
+                "+65": fare['price_65_plus'],
+            }
             dest_name = context.user_data.get('selected_dest', 'غير محددة')
-            
-            rules = PRICES_RULES.get(price_base, {})
             if age < 7:
                 response = f"📍 **الوجهة:** {dest_name}\n\n📊 **نتيجة الحساب**\n\n"
                 response += f"👶 زبون سريع | {birth_display} | العمر: {age} | **مجاناً** (لا يحتاج تذكرة)\n\n"
@@ -601,6 +822,7 @@ if __name__ == '__main__':
     
     bot_app = Application.builder().token(TOKEN).build()
     bot_app.add_handler(CommandHandler("start", start))
+    bot_app.add_handler(CommandHandler("update_prices", update_prices_command))
     bot_app.add_handler(MessageHandler(filters.Regex(r'وجهة|الوجهة'), start))
     bot_app.add_handler(CallbackQueryHandler(handle_callback))
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
