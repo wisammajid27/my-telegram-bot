@@ -77,6 +77,25 @@ def init_db():
                     updated_at TEXT NOT NULL
                 );
             ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS travel_routes (
+                    id SERIAL PRIMARY KEY,
+                    route_name TEXT UNIQUE NOT NULL,
+                    sort_order INTEGER NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS route_trips (
+                    id SERIAL PRIMARY KEY,
+                    route_id INTEGER NOT NULL REFERENCES travel_routes(id) ON DELETE CASCADE,
+                    fare_code TEXT NOT NULL,
+                    departure_label TEXT NOT NULL,
+                    service_type TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE (route_id, fare_code, departure_label, service_type)
+                );
+            ''')
             conn.commit()
 
 # تهيئة الجداول عند التشغيل
@@ -187,19 +206,111 @@ def save_fare_prices(updates):
         with conn.cursor() as cur:
             for fare_code, prices in updates.items():
                 cur.execute('''
-                    UPDATE fare_prices
-                    SET base_price = %s, price_7_12 = %s, price_13_26 = %s,
-                        price_60_64 = %s, price_65_plus = %s, updated_at = %s
-                    WHERE fare_code = %s
+                    INSERT INTO fare_prices
+                        (fare_code, base_price, price_7_12, price_13_26, price_60_64, price_65_plus, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (fare_code) DO UPDATE SET
+                        base_price = EXCLUDED.base_price, price_7_12 = EXCLUDED.price_7_12,
+                        price_13_26 = EXCLUDED.price_13_26, price_60_64 = EXCLUDED.price_60_64,
+                        price_65_plus = EXCLUDED.price_65_plus, updated_at = EXCLUDED.updated_at
                 ''', (
-                    prices['base_price'], prices['price_7_12'], prices['price_13_26'],
+                    fare_code, prices['base_price'], prices['price_7_12'], prices['price_13_26'],
                     prices['price_60_64'], prices['price_65_plus'], datetime.now().isoformat(),
-                    fare_code,
                 ))
             conn.commit()
 
 
 init_fare_prices()
+
+
+def init_route_data():
+    """Copy the built-in routes into PostgreSQL once; later edits stay in the database."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM travel_routes")
+            if cur.fetchone()[0] > 0:
+                return
+            for sort_order, (route_name, route_groups) in enumerate(ROUTES.items()):
+                cur.execute('''
+                    INSERT INTO travel_routes (route_name, sort_order, created_at)
+                    VALUES (%s, %s, %s) RETURNING id
+                ''', (route_name, sort_order, datetime.now().isoformat()))
+                route_id = cur.fetchone()[0]
+                for group in route_groups:
+                    service_type = 'fast' if group.get('fast') else 'slow' if group.get('slow') else 'regular'
+                    fare_code = fare_code_from_original_price(group['price'])
+                    for departure_label in group['times']:
+                        cur.execute('''
+                            INSERT INTO route_trips
+                                (route_id, fare_code, departure_label, service_type, created_at)
+                            VALUES (%s, %s, %s, %s, %s)
+                        ''', (route_id, fare_code, departure_label, service_type, datetime.now().isoformat()))
+            conn.commit()
+
+
+def get_routes():
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute("SELECT id, route_name FROM travel_routes ORDER BY sort_order, id")
+            return [dict(row) for row in cur.fetchall()]
+
+
+def get_route(route_id):
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute("SELECT id, route_name FROM travel_routes WHERE id = %s", (route_id,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def get_route_trips(route_id):
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=DictCursor) as cur:
+            cur.execute('''
+                SELECT fare_code, departure_label, service_type
+                FROM route_trips
+                WHERE route_id = %s
+                ORDER BY id
+            ''', (route_id,))
+            groups = {}
+            for row in cur.fetchall():
+                key = (row['fare_code'], row['service_type'])
+                groups.setdefault(key, []).append(row['departure_label'])
+            return [
+                {'fare_code': fare_code, 'service_type': service_type, 'times': times}
+                for (fare_code, service_type), times in groups.items()
+            ]
+
+
+def create_route(route_name):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute('''
+                INSERT INTO travel_routes (route_name, sort_order, created_at)
+                VALUES (%s, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM travel_routes), %s)
+                ON CONFLICT (route_name) DO NOTHING
+                RETURNING id
+            ''', (route_name, datetime.now().isoformat()))
+            row = cur.fetchone()
+            conn.commit()
+            return row[0] if row else None
+
+
+def create_route_trip(route_id, fare_code, departure_label, service_type):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute('''
+                INSERT INTO route_trips (route_id, fare_code, departure_label, service_type, created_at)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (route_id, fare_code, departure_label, service_type) DO NOTHING
+                RETURNING id
+            ''', (route_id, fare_code, departure_label, service_type, datetime.now().isoformat()))
+            row = cur.fetchone()
+            conn.commit()
+            return row[0] if row else None
+
+
+init_route_data()
 
 
 def is_admin(user_id: int) -> bool:
@@ -256,7 +367,39 @@ async def update_one_price_command(update: Update, context: ContextTypes.DEFAULT
     )
 
 
-def parse_price_updates(text: str):
+async def add_destination_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ هذا الأمر مخصص لمدير البوت فقط.")
+        return
+    context.user_data['step'] = 'admin_add_destination'
+    await update.message.reply_text("🗺️ أرسل اسم الوجهة الجديدة، مثال:\n`انقرة - قونية`", parse_mode='Markdown')
+
+
+async def add_trip_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ هذا الأمر مخصص لمدير البوت فقط.")
+        return
+    routes = get_routes()
+    keyboard = [[InlineKeyboardButton(route['route_name'], callback_data=f"admin_trip_route_{route['id']}")]
+                for route in routes]
+    context.user_data['step'] = 'admin_select_trip_route'
+    await update.message.reply_text("🚆 اختر الوجهة التي تريد إضافة رحلة لها:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def add_fare_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ هذا الأمر مخصص لمدير البوت فقط.")
+        return
+    context.user_data['step'] = 'admin_add_fare'
+    await update.message.reply_text(
+        "💰 أرسل فئة السعر الجديدة في سطر واحد:\n"
+        "`رمز جديد | السعر الكامل | 7-12 | 13-26 | 60-64 | +65`\n\n"
+        "مثال: `900 | 900 | 450 | 765 | 765 | 450`",
+        parse_mode='Markdown',
+    )
+
+
+def parse_price_updates(text: str, allow_new=False):
     """Validate the administrator's pasted price table."""
     current_prices = get_fare_prices()
     updates = {}
@@ -273,7 +416,7 @@ def parse_price_updates(text: str):
         if not category.isdigit():
             raise ValueError("رمز الفئة يجب أن يكون رقمًا، مثل 370")
         fare_code = f"fare_{category}"
-        if fare_code not in current_prices:
+        if fare_code not in current_prices and not allow_new:
             raise ValueError(f"فئة السعر {category} غير موجودة")
         if fare_code in updates:
             raise ValueError(f"فئة السعر {category} مكررة")
@@ -392,10 +535,10 @@ def delete_passengers(passenger_ids):
 
 # ====================== دوال البوت الأساسية ======================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Telegram callback data is limited to 64 bytes; use the route index rather
-    # than the Arabic route name so long destination names remain valid.
-    keyboard = [[InlineKeyboardButton(dest, callback_data=f"dest_{index}")]
-                for index, dest in enumerate(ROUTES.keys())]
+    # Use the database id so long Arabic route names remain valid callback data.
+    routes = get_routes()
+    keyboard = [[InlineKeyboardButton(route['route_name'], callback_data=f"dest_{route['id']}")]
+                for route in routes]
     reply_markup = InlineKeyboardMarkup(keyboard)
     text = "🚍 **مرحباً بك في بوت حجز التذاكر**\n\n🗂️ اختر الوجهة المطلوبة:"
     
@@ -429,25 +572,50 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop('step', None)
         await query.message.edit_text("تم إلغاء تحديث الأسعار.")
 
+    elif data.startswith("admin_trip_route_"):
+        if not is_admin(user_id):
+            return
+        try:
+            route_id = int(data.rsplit('_', 1)[1])
+        except ValueError:
+            return
+        route = get_route(route_id)
+        if not route:
+            return
+        context.user_data['selected_admin_route_id'] = route_id
+        context.user_data['step'] = 'admin_add_trip'
+        await query.message.edit_text(
+            f"🚆 **{route['route_name']}**\n\n"
+            "أرسل بيانات الرحلة بهذا الترتيب:\n"
+            "`رمز فئة السعر | الوقت أو باقي الاوقات | بطيء أو سريع أو عادي`\n\n"
+            "مثال: `535 | 01:28 | بطيء`",
+            parse_mode='Markdown',
+        )
+
     elif data.startswith("dest_"):
         try:
-            dest_name = list(ROUTES.keys())[int(data[5:])]
-        except (ValueError, IndexError):
+            route_id = int(data[5:])
+        except ValueError:
             return
+        selected_route = get_route(route_id)
+        if not selected_route:
+            return
+        dest_name = selected_route['route_name']
         context.user_data['selected_dest'] = dest_name
-        routes = ROUTES.get(dest_name, [])
+        context.user_data['selected_route_id'] = route_id
+        routes = get_route_trips(route_id)
         fare_prices = get_fare_prices()
         
         keyboard = []
         for route in routes:
-            fare_code = fare_code_from_original_price(route['price'])
+            fare_code = route['fare_code']
             fare = fare_prices.get(fare_code)
             if not fare:
                 logging.error(f"Missing fare configuration: {fare_code}")
                 continue
             formatted_times = [format_time_with_period(t) for t in route["times"]]
-            if route.get("fast"): times_str = " ⚡ سريع"
-            elif route.get("slow"): times_str = " 🐢 بطيء"
+            if route['service_type'] == "fast": times_str = " ⚡ سريع"
+            elif route['service_type'] == "slow": times_str = " 🐢 بطيء"
             else: times_str = ""
             
             if len(formatted_times) > 5:
@@ -712,19 +880,19 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     step = context.user_data.get('step')
     user_id = update.effective_user.id
 
-    if step in ("admin_update_prices", "admin_update_one_price"):
+    if step in ("admin_update_prices", "admin_update_one_price", "admin_add_fare"):
         if not is_admin(user_id):
             context.user_data.pop('step', None)
             await update.message.reply_text("⛔ هذا الأمر مخصص لمدير البوت فقط.")
             return
         try:
-            updates = parse_price_updates(text)
-            if step == "admin_update_one_price" and len(updates) != 1:
-                raise ValueError("أمر /update_price يقبل سطرًا واحدًا فقط")
+            updates = parse_price_updates(text, allow_new=step == "admin_add_fare")
+            if step in ("admin_update_one_price", "admin_add_fare") and len(updates) != 1:
+                raise ValueError("هذا الأمر يقبل سطرًا واحدًا فقط")
             current_prices = get_fare_prices()
             preview = []
             for fare_code, prices in updates.items():
-                old_price = current_prices[fare_code]['base_price']
+                old_price = current_prices.get(fare_code, {}).get('base_price', 'جديدة')
                 category = fare_code.split('_')[1]
                 preview.append(f"فئة {category}: {old_price} ← {prices['base_price']}")
 
@@ -744,6 +912,54 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 f"❌ {error}\n\nأعد إرسال الجدول بالصيغة المطلوبة، أو استخدم /update_prices للبدء من جديد."
             )
+
+    elif step == "admin_add_destination":
+        if not is_admin(user_id):
+            context.user_data.pop('step', None)
+            return
+        route_name = text.strip()
+        if len(route_name) < 3:
+            await update.message.reply_text("❌ اسم الوجهة قصير جدًا. أرسله مرة أخرى.")
+            return
+        route_id = create_route(route_name)
+        if route_id:
+            context.user_data.pop('step', None)
+            await update.message.reply_text(
+                f"✅ تمت إضافة وجهة **{route_name}**.\nاستخدم /add_trip لإضافة السعر والوقت.",
+                parse_mode='Markdown',
+            )
+        else:
+            await update.message.reply_text("⚠️ هذه الوجهة موجودة بالفعل، أو تعذر حفظها.")
+
+    elif step == "admin_add_trip":
+        if not is_admin(user_id):
+            context.user_data.pop('step', None)
+            return
+        try:
+            parts = [part.strip() for part in text.split('|')]
+            if len(parts) != 3:
+                raise ValueError("استخدم 3 قيم مفصولة بعلامة |")
+            category, departure_label, service_label = parts
+            category = category.replace('fare_', '')
+            if not category.isdigit() or not departure_label:
+                raise ValueError("رمز السعر والوقت مطلوبان")
+            fare_code = f"fare_{category}"
+            if fare_code not in get_fare_prices():
+                raise ValueError(f"فئة السعر {category} غير موجودة. أضفها أولًا عبر /add_fare")
+            service_types = {'بطيء': 'slow', 'slow': 'slow', 'سريع': 'fast', 'fast': 'fast', 'عادي': 'regular', 'regular': 'regular'}
+            service_type = service_types.get(service_label.lower())
+            if not service_type:
+                raise ValueError("نوع القطار يجب أن يكون بطيء أو سريع أو عادي")
+            route_id = context.user_data.get('selected_admin_route_id')
+            if not route_id:
+                raise ValueError("اختر الوجهة من جديد عبر /add_trip")
+            trip_id = create_route_trip(route_id, fare_code, departure_label, service_type)
+            if trip_id:
+                await update.message.reply_text("✅ تمت إضافة الرحلة. يمكنك إرسال سطر رحلة آخر لنفس الوجهة، أو استخدام /add_trip لاختيار وجهة أخرى.")
+            else:
+                await update.message.reply_text("⚠️ هذه الرحلة موجودة بالفعل.")
+        except ValueError as error:
+            await update.message.reply_text(f"❌ {error}\nمثال: `535 | 01:28 | بطيء`", parse_mode='Markdown')
 
     elif step == "quick_calc":
         try:
@@ -844,6 +1060,9 @@ if __name__ == '__main__':
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CommandHandler("update_prices", update_prices_command))
     bot_app.add_handler(CommandHandler("update_price", update_one_price_command))
+    bot_app.add_handler(CommandHandler("add_destination", add_destination_command))
+    bot_app.add_handler(CommandHandler("add_trip", add_trip_command))
+    bot_app.add_handler(CommandHandler("add_fare", add_fare_command))
     bot_app.add_handler(MessageHandler(filters.Regex(r'وجهة|الوجهة'), start))
     bot_app.add_handler(CallbackQueryHandler(handle_callback))
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
