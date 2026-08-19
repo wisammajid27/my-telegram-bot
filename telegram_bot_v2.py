@@ -94,6 +94,14 @@ ROUTES = {
         {"price": 535, "times": ["23:18"], "slow": True},
         {"price": 645, "times": ["باقي الاوقات"]},
     ],
+    "اسكي شهير - اسطنبول (سوغوتلوجشمة)": [
+        {"price": 535, "times": ["01:28"], "slow": True},
+        {"price": 645, "times": ["باقي الاوقات"]},
+    ],
+    "اسطنبول (سوغوتلوجشمة) - اسكي شهير": [
+        {"price": 535, "times": ["22:47"], "slow": True},
+        {"price": 645, "times": ["باقي الاوقات"], "fast": True},
+    ],
     "اسكي شهير - كركالة": [
         {"price": 820, "times": ["11:56"], "fast": True},
         {"price": 820, "times": ["16:10"], "fast": True},
@@ -220,7 +228,10 @@ def delete_passengers(passenger_ids):
 
 # ====================== دوال البوت الأساسية ======================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [[InlineKeyboardButton(dest, callback_data=f"dest_{dest}")] for dest in ROUTES.keys()]
+    # Telegram callback data is limited to 64 bytes; use the route index rather
+    # than the Arabic route name so long destination names remain valid.
+    keyboard = [[InlineKeyboardButton(dest, callback_data=f"dest_{index}")]
+                for index, dest in enumerate(ROUTES.keys())]
     reply_markup = InlineKeyboardMarkup(keyboard)
     text = "🚍 **مرحباً بك في بوت حجز التذاكر**\n\n🗂️ اختر الوجهة المطلوبة:"
     
@@ -236,7 +247,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     if data.startswith("dest_"):
-        dest_name = data[5:]
+        try:
+            dest_name = list(ROUTES.keys())[int(data[5:])]
+        except (ValueError, IndexError):
+            return
         context.user_data['selected_dest'] = dest_name
         routes = ROUTES.get(dest_name, [])
         
