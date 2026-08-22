@@ -547,6 +547,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.callback_query.message.edit_text(text, reply_markup=reply_markup, parse_mode='Markdown')
 
+
+def is_destination_request(text: str) -> bool:
+    """Recognize the short Arabic message used to reopen the destinations menu."""
+    normalized = text.strip().replace("ـ", "")
+    return normalized in {"وجهة", "الوجهة"}
+
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -880,6 +886,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     step = context.user_data.get('step')
     user_id = update.effective_user.id
 
+    # This shortcut must work from every screen, including while the user is in
+    # a multi-step flow such as adding a family or entering a birth date.
+    if is_destination_request(text):
+        context.user_data.pop('step', None)
+        await start(update, context)
+        return
+
     if step in ("admin_update_prices", "admin_update_one_price", "admin_add_fare"):
         if not is_admin(user_id):
             context.user_data.pop('step', None)
@@ -1041,10 +1054,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             await update.message.reply_text("❌ التنسيق خاطئ\nمثال: أحمد 15-05-1995 أو أحمد 15/05/1995")
     else:
-        if any(word in text for word in ["وجهة", "الوجهة"]):
-            await start(update, context)
-        else:
-            await update.message.reply_text("⚠️ استخدم الأزرار أعلاه")
+        await update.message.reply_text("⚠️ استخدم الأزرار أعلاه")
 
 # ====================== تشغيل البوت والخدمات ======================
 if __name__ == '__main__':
@@ -1063,7 +1073,6 @@ if __name__ == '__main__':
     bot_app.add_handler(CommandHandler("add_destination", add_destination_command))
     bot_app.add_handler(CommandHandler("add_trip", add_trip_command))
     bot_app.add_handler(CommandHandler("add_fare", add_fare_command))
-    bot_app.add_handler(MessageHandler(filters.Regex(r'وجهة|الوجهة'), start))
     bot_app.add_handler(CallbackQueryHandler(handle_callback))
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
