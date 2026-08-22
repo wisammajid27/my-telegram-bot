@@ -27,6 +27,7 @@ def run():
 
 def keep_alive():
     t = Thread(target=run)
+    t.daemon = True
     t.start()
 
 # ====================== إدارة قاعدة البيانات (PostgreSQL) ======================
@@ -35,6 +36,8 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 @contextmanager
 def get_db():
     """إدارة اتصال قاعدة البيانات بشكل آمن يضمن الإغلاق التلقائي"""
+    if not DATABASE_URL:
+        raise ValueError("DATABASE_URL environment variable is not set!")
     conn = psycopg2.connect(DATABASE_URL, sslmode='require')
     try:
         yield conn
@@ -46,63 +49,63 @@ def get_db():
         conn.close()
 
 def init_db():
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS families (
-                    id SERIAL PRIMARY KEY,
-                    user_id BIGINT,
-                    family_name TEXT,
-                    created_at TEXT
-                );
-            ''')
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS passengers (
-                    id SERIAL PRIMARY KEY,
-                    family_id INTEGER,
-                    user_id BIGINT,
-                    name TEXT,
-                    birth_date TEXT,
-                    created_at TEXT
-                );
-            ''')
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS fare_prices (
-                    fare_code TEXT PRIMARY KEY,
-                    base_price INTEGER NOT NULL,
-                    price_7_12 INTEGER NOT NULL,
-                    price_13_26 INTEGER NOT NULL,
-                    price_60_64 INTEGER NOT NULL,
-                    price_65_plus INTEGER NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-            ''')
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS travel_routes (
-                    id SERIAL PRIMARY KEY,
-                    route_name TEXT UNIQUE NOT NULL,
-                    sort_order INTEGER NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-            ''')
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS route_trips (
-                    id SERIAL PRIMARY KEY,
-                    route_id INTEGER NOT NULL REFERENCES travel_routes(id) ON DELETE CASCADE,
-                    fare_code TEXT NOT NULL,
-                    departure_label TEXT NOT NULL,
-                    service_type TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    UNIQUE (route_id, fare_code, departure_label, service_type)
-                );
-            ''')
-            conn.commit()
-
-# تهيئة الجداول عند التشغيل
-init_db()
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute('''
+                    CREATE TABLE IF NOT EXISTS families (
+                        id SERIAL PRIMARY KEY,
+                        user_id BIGINT,
+                        family_name TEXT,
+                        created_at TEXT
+                    );
+                ''')
+                cur.execute('''
+                    CREATE TABLE IF NOT EXISTS passengers (
+                        id SERIAL PRIMARY KEY,
+                        family_id INTEGER,
+                        user_id BIGINT,
+                        name TEXT,
+                        birth_date TEXT,
+                        created_at TEXT
+                    );
+                ''')
+                cur.execute('''
+                    CREATE TABLE IF NOT EXISTS fare_prices (
+                        fare_code TEXT PRIMARY KEY,
+                        base_price INTEGER NOT NULL,
+                        price_7_12 INTEGER NOT NULL,
+                        price_13_26 INTEGER NOT NULL,
+                        price_60_64 INTEGER NOT NULL,
+                        price_65_plus INTEGER NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+                ''')
+                cur.execute('''
+                    CREATE TABLE IF NOT EXISTS travel_routes (
+                        id SERIAL PRIMARY KEY,
+                        route_name TEXT UNIQUE NOT NULL,
+                        sort_order INTEGER NOT NULL,
+                        created_at TEXT NOT NULL
+                    );
+                ''')
+                cur.execute('''
+                    CREATE TABLE IF NOT EXISTS route_trips (
+                        id SERIAL PRIMARY KEY,
+                        route_id INTEGER NOT NULL REFERENCES travel_routes(id) ON DELETE CASCADE,
+                        fare_code TEXT NOT NULL,
+                        departure_label TEXT NOT NULL,
+                        service_type TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        UNIQUE (route_id, fare_code, departure_label, service_type)
+                    );
+                ''')
+                conn.commit()
+    except Exception as e:
+        logging.error(f"Failed to initialize database: {e}")
 
 # ====================== البيانات الثابتة والقوانين ======================
-OFFICE_PROFIT = 85
+OFFICE_PROFIT = 85[cite: 1]
 ROUTES = {
     "اسكيشهير - انقرة": [
         {"price": 370, "times": ["03:24"], "slow": True},
@@ -149,7 +152,7 @@ ROUTES = {
         {"price": 240, "times": ["11:20", "18:00"], "slow": True},
         {"price": 305, "times": ["07:00", "13:20", "18:40"], "fast": True},
     ],
-}
+}[cite: 1]
 
 PRICES_RULES = {
     370: {"7-12": 185, "13-26": 315, "60-64": 315, "+65": 185},
@@ -161,35 +164,32 @@ PRICES_RULES = {
     820: {"7-12": 410, "13-26": 700, "60-64": 700, "+65": 410},
     240: {"7-12": 120, "13-26": 205, "60-64": 205, "+65": 120},
     305: {"7-12": 155, "13-26": 260, "60-64": 260, "+65": 155},
-}
+}[cite: 1]
 
-# Only this Telegram account can change prices from inside the bot.
-ADMIN_USER_ID = 7209751288
-
+ADMIN_USER_ID = 7209751288[cite: 1]
 
 def fare_code_from_original_price(original_price: int) -> str:
-    """Return a stable fare identifier even after its displayed price changes."""
-    return f"fare_{original_price}"
-
+    return f"fare_{original_price}"[cite: 1]
 
 def init_fare_prices():
-    """Seed editable prices once, without overwriting prices saved by the admin."""
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            for base_price, rules in PRICES_RULES.items():
-                cur.execute('''
-                    INSERT INTO fare_prices
-                        (fare_code, base_price, price_7_12, price_13_26, price_60_64, price_65_plus, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (fare_code) DO NOTHING
-                ''', (
-                    fare_code_from_original_price(base_price), base_price,
-                    rules.get("7-12", base_price), rules.get("13-26", base_price),
-                    rules.get("60-64", base_price), rules.get("+65", base_price),
-                    datetime.now().isoformat(),
-                ))
-            conn.commit()
-
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                for base_price, rules in PRICES_RULES.items():
+                    cur.execute('''
+                        INSERT INTO fare_prices
+                            (fare_code, base_price, price_7_12, price_13_26, price_60_64, price_65_plus, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (fare_code) DO NOTHING
+                    ''', (
+                        fare_code_from_original_price(base_price), base_price,
+                        rules.get("7-12", base_price), rules.get("13-26", base_price),
+                        rules.get("60-64", base_price), rules.get("+65", base_price),
+                        datetime.now().isoformat(),
+                    ))
+                conn.commit()
+    except Exception as e:
+        logging.error(f"Failed to init fare prices: {e}")
 
 def get_fare_prices():
     with get_db() as conn:
@@ -198,8 +198,7 @@ def get_fare_prices():
                 SELECT fare_code, base_price, price_7_12, price_13_26, price_60_64, price_65_plus
                 FROM fare_prices
             ''')
-            return {row['fare_code']: dict(row) for row in cur.fetchall()}
-
+            return {row['fare_code']: dict(row) for row in cur.fetchall()}[cite: 1]
 
 def save_fare_prices(updates):
     with get_db() as conn:
@@ -216,52 +215,47 @@ def save_fare_prices(updates):
                 ''', (
                     fare_code, prices['base_price'], prices['price_7_12'], prices['price_13_26'],
                     prices['price_60_64'], prices['price_65_plus'], datetime.now().isoformat(),
-                ))
+                ))[cite: 1]
             conn.commit()
-
-
-init_fare_prices()
-
 
 def init_route_data():
-    """Copy the built-in routes into PostgreSQL once; later edits stay in the database."""
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM travel_routes")
-            if cur.fetchone()[0] > 0:
-                return
-            for sort_order, (route_name, route_groups) in enumerate(ROUTES.items()):
-                cur.execute('''
-                    INSERT INTO travel_routes (route_name, sort_order, created_at)
-                    VALUES (%s, %s, %s) RETURNING id
-                ''', (route_name, sort_order, datetime.now().isoformat()))
-                route_id = cur.fetchone()[0]
-                for group in route_groups:
-                    service_type = 'fast' if group.get('fast') else 'slow' if group.get('slow') else 'regular'
-                    fare_code = fare_code_from_original_price(group['price'])
-                    for departure_label in group['times']:
-                        cur.execute('''
-                            INSERT INTO route_trips
-                                (route_id, fare_code, departure_label, service_type, created_at)
-                            VALUES (%s, %s, %s, %s, %s)
-                        ''', (route_id, fare_code, departure_label, service_type, datetime.now().isoformat()))
-            conn.commit()
-
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM travel_routes")
+                if cur.fetchone()[0] > 0:
+                    return
+                for sort_order, (route_name, route_groups) in enumerate(ROUTES.items()):
+                    cur.execute('''
+                        INSERT INTO travel_routes (route_name, sort_order, created_at)
+                        VALUES (%s, %s, %s) RETURNING id
+                    ''', (route_name, sort_order, datetime.now().isoformat()))
+                    route_id = cur.fetchone()[0]
+                    for group in route_groups:
+                        service_type = 'fast' if group.get('fast') else 'slow' if group.get('slow') else 'regular'
+                        fare_code = fare_code_from_original_price(group['price'])
+                        for departure_label in group['times']:
+                            cur.execute('''
+                                INSERT INTO route_trips
+                                    (route_id, fare_code, departure_label, service_type, created_at)
+                                VALUES (%s, %s, %s, %s, %s)
+                            ''', (route_id, fare_code, departure_label, service_type, datetime.now().isoformat()))
+                conn.commit()
+    except Exception as e:
+        logging.error(f"Failed to init routes: {e}")
 
 def get_routes():
     with get_db() as conn:
         with conn.cursor(cursor_factory=DictCursor) as cur:
             cur.execute("SELECT id, route_name FROM travel_routes ORDER BY sort_order, id")
-            return [dict(row) for row in cur.fetchall()]
-
+            return [dict(row) for row in cur.fetchall()][cite: 1]
 
 def get_route(route_id):
     with get_db() as conn:
         with conn.cursor(cursor_factory=DictCursor) as cur:
             cur.execute("SELECT id, route_name FROM travel_routes WHERE id = %s", (route_id,))
             row = cur.fetchone()
-            return dict(row) if row else None
-
+            return dict(row) if row else None[cite: 1]
 
 def get_route_trips(route_id):
     with get_db() as conn:
@@ -271,7 +265,7 @@ def get_route_trips(route_id):
                 FROM route_trips
                 WHERE route_id = %s
                 ORDER BY id
-            ''', (route_id,))
+            ''', (route_id,))[cite: 1]
             groups = {}
             for row in cur.fetchall():
                 key = (row['fare_code'], row['service_type'])
@@ -279,8 +273,7 @@ def get_route_trips(route_id):
             return [
                 {'fare_code': fare_code, 'service_type': service_type, 'times': times}
                 for (fare_code, service_type), times in groups.items()
-            ]
-
+            ][cite: 1]
 
 def create_route(route_name):
     with get_db() as conn:
@@ -290,11 +283,10 @@ def create_route(route_name):
                 VALUES (%s, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM travel_routes), %s)
                 ON CONFLICT (route_name) DO NOTHING
                 RETURNING id
-            ''', (route_name, datetime.now().isoformat()))
+            ''', (route_name, datetime.now().isoformat()))[cite: 1]
             row = cur.fetchone()
             conn.commit()
-            return row[0] if row else None
-
+            return row[0] if row else None[cite: 1]
 
 def create_route_trip(route_id, fare_code, departure_label, service_type):
     with get_db() as conn:
@@ -304,21 +296,15 @@ def create_route_trip(route_id, fare_code, departure_label, service_type):
                 VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT (route_id, fare_code, departure_label, service_type) DO NOTHING
                 RETURNING id
-            ''', (route_id, fare_code, departure_label, service_type, datetime.now().isoformat()))
+            ''', (route_id, fare_code, departure_label, service_type, datetime.now().isoformat()))[cite: 1]
             row = cur.fetchone()
             conn.commit()
-            return row[0] if row else None
-
-
-init_route_data()
-
+            return row[0] if row else None[cite: 1]
 
 def is_admin(user_id: int) -> bool:
-    return user_id == ADMIN_USER_ID
-
+    return user_id == ADMIN_USER_ID[cite: 1]
 
 def price_update_template():
-    """Build a copyable price table for the administrator."""
     fare_prices = get_fare_prices()
     lines = []
     for fare_code in sorted(fare_prices, key=lambda code: int(code.split('_')[1])):
@@ -327,17 +313,15 @@ def price_update_template():
         lines.append(
             f"{category} | {fare['base_price']} | {fare['price_7_12']} | "
             f"{fare['price_13_26']} | {fare['price_60_64']} | {fare['price_65_plus']}"
-        )
-    return "\n".join(lines)
-
+        )[cite: 1]
+    return "\n".join(lines)[cite: 1]
 
 async def update_prices_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start the administrator's one-message price update flow."""
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("⛔ هذا الأمر مخصص لمدير البوت فقط.")
+        await update.message.reply_text("⛔ هذا الأمر مخصص لمدير البوت فقط.")[cite: 1]
         return
 
-    context.user_data['step'] = 'admin_update_prices'
+    context.user_data['step'] = 'admin_update_prices'[cite: 1]
     await update.message.reply_text(
         "💼 **تحديث الأسعار دفعة واحدة**\n\n"
         "يمكنك إرسال سطر واحد أو عدة أسطر؛ كل سطر يحدّث فئة واحدة بهذا الترتيب:\n"
@@ -346,16 +330,14 @@ async def update_prices_command(update: Update, context: ContextTypes.DEFAULT_TY
         "انسخ الجدول التالي وعدّل الأرقام فقط، ثم أرسله:\n\n"
         f"```\n{price_update_template()}\n```",
         parse_mode='Markdown',
-    )
-
+    )[cite: 1]
 
 async def update_one_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start a single-fare update, without requiring the whole price table."""
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("⛔ هذا الأمر مخصص لمدير البوت فقط.")
+        await update.message.reply_text("⛔ هذا الأمر مخصص لمدير البوت فقط.")[cite: 1]
         return
 
-    context.user_data['step'] = 'admin_update_one_price'
+    context.user_data['step'] = 'admin_update_one_price'[cite: 1]
     await update.message.reply_text(
         "💼 **تحديث فئة سعر واحدة**\n\n"
         "أرسل سطرًا واحدًا فقط بهذا الترتيب:\n"
@@ -364,43 +346,38 @@ async def update_one_price_command(update: Update, context: ContextTypes.DEFAULT
         "`370 | 400 | 200 | 340 | 340 | 200`\n\n"
         "رمز الفئة هو الرقم الأول الأصلي، وليس السعر الجديد.",
         parse_mode='Markdown',
-    )
-
+    )[cite: 1]
 
 async def add_destination_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("⛔ هذا الأمر مخصص لمدير البوت فقط.")
+        await update.message.reply_text("⛔ هذا الأمر مخصص لمدير البوت فقط.")[cite: 1]
         return
-    context.user_data['step'] = 'admin_add_destination'
-    await update.message.reply_text("🗺️ أرسل اسم الوجهة الجديدة، مثال:\n`انقرة - قونية`", parse_mode='Markdown')
-
+    context.user_data['step'] = 'admin_add_destination'[cite: 1]
+    await update.message.reply_text("🗺️ أرسل اسم الوجهة الجديدة، مثال:\n`انقرة - قونية`", parse_mode='Markdown')[cite: 1]
 
 async def add_trip_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("⛔ هذا الأمر مخصص لمدير البوت فقط.")
+        await update.message.reply_text("⛔ هذا الأمر مخصص لمدير البوت فقط.")[cite: 1]
         return
     routes = get_routes()
     keyboard = [[InlineKeyboardButton(route['route_name'], callback_data=f"admin_trip_route_{route['id']}")]
-                for route in routes]
-    context.user_data['step'] = 'admin_select_trip_route'
-    await update.message.reply_text("🚆 اختر الوجهة التي تريد إضافة رحلة لها:", reply_markup=InlineKeyboardMarkup(keyboard))
-
+                for route in routes][cite: 1]
+    context.user_data['step'] = 'admin_select_trip_route'[cite: 1]
+    await update.message.reply_text("🚆 اختر الوجهة التي تريد إضافة رحلة لها:", reply_markup=InlineKeyboardMarkup(keyboard))[cite: 1]
 
 async def add_fare_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("⛔ هذا الأمر مخصص لمدير البوت فقط.")
+        await update.message.reply_text("⛔ هذا الأمر مخصص لمدير البوت فقط.")[cite: 1]
         return
-    context.user_data['step'] = 'admin_add_fare'
+    context.user_data['step'] = 'admin_add_fare'[cite: 1]
     await update.message.reply_text(
         "💰 أرسل فئة السعر الجديدة في سطر واحد:\n"
         "`رمز جديد | السعر الكامل | 7-12 | 13-26 | 60-64 | +65`\n\n"
         "مثال: `900 | 900 | 450 | 765 | 765 | 450`",
         parse_mode='Markdown',
-    )
-
+    )[cite: 1]
 
 def parse_price_updates(text: str, allow_new=False):
-    """Validate the administrator's pasted price table."""
     current_prices = get_fare_prices()
     updates = {}
 
@@ -410,23 +387,23 @@ def parse_price_updates(text: str, allow_new=False):
             continue
         parts = [part.strip() for part in line.split('|')]
         if len(parts) != 6:
-            raise ValueError("كل سطر يجب أن يحتوي على 6 قيم مفصولة بعلامة |")
+            raise ValueError("كل سطر يجب أن يحتوي على 6 قيم مفصولة بعلامة |")[cite: 1]
 
         category = parts[0].replace('fare_', '')
         if not category.isdigit():
-            raise ValueError("رمز الفئة يجب أن يكون رقمًا، مثل 370")
+            raise ValueError("رمز الفئة يجب أن يكون رقمًا، مثل 370")[cite: 1]
         fare_code = f"fare_{category}"
         if fare_code not in current_prices and not allow_new:
-            raise ValueError(f"فئة السعر {category} غير موجودة")
+            raise ValueError(f"فئة السعر {category} غير موجودة")[cite: 1]
         if fare_code in updates:
-            raise ValueError(f"فئة السعر {category} مكررة")
+            raise ValueError(f"فئة السعر {category} مكررة")[cite: 1]
 
         try:
             values = [int(value) for value in parts[1:]]
         except ValueError as error:
-            raise ValueError("يجب أن تكون جميع الأسعار أرقامًا صحيحة") from error
+            raise ValueError("يجب أن تكون جميع الأسعار أرقامًا صحيحة") from error[cite: 1]
         if any(value < 0 for value in values) or values[0] == 0:
-            raise ValueError("الأسعار يجب أن تكون موجبة، والسعر الكامل أكبر من صفر")
+            raise ValueError("الأسعار يجب أن تكون موجبة، والسعر الكامل أكبر من صفر")[cite: 1]
 
         updates[fare_code] = {
             'base_price': values[0],
@@ -437,10 +414,10 @@ def parse_price_updates(text: str, allow_new=False):
         }
 
     if not updates:
-        raise ValueError("لم يتم العثور على أي صف أسعار")
+        raise ValueError("لم يتم العثور على أي صف أسعار")[cite: 1]
     return updates
 
-BIRTH_DATE_FORMATS = ("%d-%m-%Y", "%d/%m/%Y", "%d.%m.%Y")
+BIRTH_DATE_FORMATS = ("%d-%m-%Y", "%d/%m/%Y", "%d.%m.%Y")[cite: 1]
 
 def parse_birth_date(date_str: str) -> datetime:
     date_str = date_str.strip()
@@ -449,13 +426,12 @@ def parse_birth_date(date_str: str) -> datetime:
             return datetime.strptime(date_str, fmt)
         except ValueError:
             continue
-    raise ValueError("invalid birth date")
+    raise ValueError("invalid birth date")[cite: 1]
 
 def normalize_birth_date(date_str: str) -> str:
-    return parse_birth_date(date_str).strftime("%d-%m-%Y")
+    return parse_birth_date(date_str).strftime("%d-%m-%Y")[cite: 1]
 
 def calculate_railway_age(birth_date: datetime, today: date | None = None) -> int:
-    """Return the railway age: add one year only after a full month past the birthday."""
     today = today or date.today()
 
     def birthday_in(year: int) -> date:
@@ -471,7 +447,7 @@ def calculate_railway_age(birth_date: datetime, today: date | None = None) -> in
     first_month_day = min(last_birthday.day, calendar.monthrange(next_month_year, next_month)[1])
     one_month_after_birthday = date(next_month_year, next_month, first_month_day)
 
-    return actual_age + (today >= one_month_after_birthday)
+    return actual_age + (today >= one_month_after_birthday)[cite: 1]
 
 def format_time_with_period(time_str: str) -> str:
     try:
@@ -481,22 +457,21 @@ def format_time_with_period(time_str: str) -> str:
         elif 16 <= hour <= 17: period = "ع"
         elif 18 <= hour <= 19: period = "م"
         else: period = "ل"
-        return f"{time_str} {period}"
+        return f"{time_str} {period}"[cite: 1]
     except:
-        return time_str
+        return time_str[cite: 1]
 
-# ====================== دوال العائلات والمسافرين الجاهزة وآمنة الاتصال ======================
 def get_user_families(user_id):
     with get_db() as conn:
         with conn.cursor(cursor_factory=DictCursor) as cur:
             cur.execute("SELECT * FROM families WHERE user_id = %s ORDER BY family_name", (user_id,))
-            return [dict(row) for row in cur.fetchall()]
+            return [dict(row) for row in cur.fetchall()][cite: 1]
 
 def get_family_passengers(family_id):
     with get_db() as conn:
         with conn.cursor(cursor_factory=DictCursor) as cur:
             cur.execute("SELECT * FROM passengers WHERE family_id = %s ORDER BY name", (family_id,))
-            return [dict(row) for row in cur.fetchall()]
+            return [dict(row) for row in cur.fetchall()][cite: 1]
 
 def create_family(user_id, family_name):
     with get_db() as conn:
@@ -509,573 +484,572 @@ def create_family(user_id, family_name):
                 return family_id
             except Exception as e:
                 logging.error(f"Error creating family: {e}")
-                return None
+                return None[cite: 1]
 
 def add_passenger_to_family(family_id, user_id, name, birth_date):
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute("INSERT INTO passengers (family_id, user_id, name, birth_date, created_at) VALUES (%s, %s, %s, %s, %s)",
                         (family_id, user_id, name, birth_date, datetime.now().isoformat()))
-            conn.commit()
+            conn.commit()[cite: 1]
 
 def delete_families(family_ids):
     with get_db() as conn:
         with conn.cursor() as cur:
             for fid in family_ids:
                 cur.execute("DELETE FROM passengers WHERE family_id = %s", (fid,))
-                cur.execute("DELETE FROM families WHERE id = %s", (fid,))
-            conn.commit()
+                cur.execute("DELETE FROM families WHERE id = %s", (fid,))[cite: 1]
+            conn.commit()[cite: 1]
 
 def delete_passengers(passenger_ids):
     with get_db() as conn:
         with conn.cursor() as cur:
             for pid in passenger_ids:
-                cur.execute("DELETE FROM passengers WHERE id = %s", (pid,))
-            conn.commit()
+                cur.execute("DELETE FROM passengers WHERE id = %s", (pid,))[cite: 1]
+            conn.commit()[cite: 1]
 
-# ====================== دوال البوت الأساسية ======================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Use the database id so long Arabic route names remain valid callback data.
     routes = get_routes()
     keyboard = [[InlineKeyboardButton(route['route_name'], callback_data=f"dest_{route['id']}")]
-                for route in routes]
+                for route in routes][cite: 1]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    text = "🚍 **مرحباً بك في بوت حجز التذاكر**\n\n🗂️ اختر الوجهة المطلوبة:"
+    text = "🚍 **مرحباً بك في بوت حجز التذاكر**\n\n🗂️ اختر الوجهة المطلوبة:"[cite: 1]
     
     if update.message:
-        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')[cite: 1]
     else:
-        await update.callback_query.message.edit_text(text, reply_markup=reply_markup, parse_mode='Markdown')
-
+        await update.callback_query.message.edit_text(text, reply_markup=reply_markup, parse_mode='Markdown')[cite: 1]
 
 def is_destination_request(text: str) -> bool:
-    """Recognize the short Arabic message used to reopen the destinations menu."""
     normalized = text.strip().replace("ـ", "")
-    return normalized in {"وجهة", "الوجهة"}
+    return normalized in {"وجهة", "الوجهة"}[cite: 1]
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    data = query.data
+    await query.answer()[cite: 1]
+    user_id = query.from_user.id[cite: 1]
+    data = query.data[cite: 1]
 
     if data == "confirm_price_updates":
         if not is_admin(user_id):
             return
-        updates = context.user_data.get('pending_price_updates')
+        updates = context.user_data.get('pending_price_updates')[cite: 1]
         if not updates:
-            await query.message.edit_text("⚠️ انتهت جلسة التحديث. استخدم /update_prices مرة أخرى.")
+            await query.message.edit_text("⚠️ انتهت جلسة التحديث. استخدم /update_prices مرة أخرى.")[cite: 1]
             return
-        save_fare_prices(updates)
-        context.user_data.pop('pending_price_updates', None)
-        context.user_data.pop('step', None)
-        await query.message.edit_text(f"✅ تم حفظ تحديث {len(updates)} فئة سعر بنجاح.")
+        save_fare_prices(updates)[cite: 1]
+        context.user_data.pop('pending_price_updates', None)[cite: 1]
+        context.user_data.pop('step', None)[cite: 1]
+        await query.message.edit_text(f"✅ تم حفظ تحديث {len(updates)} فئة سعر بنجاح.")[cite: 1]
 
     elif data == "cancel_price_updates":
         if not is_admin(user_id):
             return
-        context.user_data.pop('pending_price_updates', None)
-        context.user_data.pop('step', None)
-        await query.message.edit_text("تم إلغاء تحديث الأسعار.")
+        context.user_data.pop('pending_price_updates', None)[cite: 1]
+        context.user_data.pop('step', None)[cite: 1]
+        await query.message.edit_text("تم إلغاء تحديث الأسعار.")[cite: 1]
 
     elif data.startswith("admin_trip_route_"):
         if not is_admin(user_id):
             return
         try:
-            route_id = int(data.rsplit('_', 1)[1])
+            route_id = int(data.rsplit('_', 1)[1])[cite: 1]
         except ValueError:
             return
-        route = get_route(route_id)
+        route = get_route(route_id)[cite: 1]
         if not route:
             return
-        context.user_data['selected_admin_route_id'] = route_id
-        context.user_data['step'] = 'admin_add_trip'
+        context.user_data['selected_admin_route_id'] = route_id[cite: 1]
+        context.user_data['step'] = 'admin_add_trip'[cite: 1]
         await query.message.edit_text(
             f"🚆 **{route['route_name']}**\n\n"
             "أرسل بيانات الرحلة بهذا الترتيب:\n"
             "`رمز فئة السعر | الوقت أو باقي الاوقات | بطيء أو سريع أو عادي`\n\n"
             "مثال: `535 | 01:28 | بطيء`",
             parse_mode='Markdown',
-        )
+        )[cite: 1]
 
     elif data.startswith("dest_"):
         try:
-            route_id = int(data[5:])
+            route_id = int(data[5:])[cite: 1]
         except ValueError:
             return
-        selected_route = get_route(route_id)
+        selected_route = get_route(route_id)[cite: 1]
         if not selected_route:
             return
-        dest_name = selected_route['route_name']
-        context.user_data['selected_dest'] = dest_name
-        context.user_data['selected_route_id'] = route_id
-        routes = get_route_trips(route_id)
-        fare_prices = get_fare_prices()
+        dest_name = selected_route['route_name'][cite: 1]
+        context.user_data['selected_dest'] = dest_name[cite: 1]
+        context.user_data['selected_route_id'] = route_id[cite: 1]
+        routes = get_route_trips(route_id)[cite: 1]
+        fare_prices = get_fare_prices()[cite: 1]
         
         keyboard = []
         for route in routes:
             fare_code = route['fare_code']
             fare = fare_prices.get(fare_code)
             if not fare:
-                logging.error(f"Missing fare configuration: {fare_code}")
+                logging.error(f"Missing fare configuration: {fare_code}")[cite: 1]
                 continue
-            formatted_times = [format_time_with_period(t) for t in route["times"]]
-            if route['service_type'] == "fast": times_str = " ⚡ سريع"
-            elif route['service_type'] == "slow": times_str = " 🐢 بطيء"
-            else: times_str = ""
+            formatted_times = [format_time_with_period(t) for t in route["times"]][cite: 1]
+            if route['service_type'] == "fast": times_str = " ⚡ سريع"[cite: 1]
+            elif route['service_type'] == "slow": times_str = " 🐢 بطيء"[cite: 1]
+            else: times_str = ""[cite: 1]
             
             if len(formatted_times) > 5:
-                times_display = " | ".join(formatted_times[:5]) + " | وغيرها" + times_str
+                times_display = " | ".join(formatted_times[:5]) + " | وغيرها" + times_str[cite: 1]
             else:
-                times_display = " | ".join(formatted_times) + times_str
+                times_display = " | ".join(formatted_times) + times_str[cite: 1]
                 
-            button_text = f"{fare['base_price']} ليرة - {times_display}"
-            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"price_{fare_code}")])
+            button_text = f"{fare['base_price']} ليرة - {times_display}"[cite: 1]
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"price_{fare_code}")])[cite: 1]
         
-        keyboard.append([InlineKeyboardButton("⬅️_العودة", callback_data="back_to_dest")])
+        keyboard.append([InlineKeyboardButton("⬅️_العودة", callback_data="back_to_dest")])[cite: 1]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.message.edit_text(f"📍 **الوجهة:** {dest_name}\n\nاختر المسار:", reply_markup=reply_markup, parse_mode='Markdown')
+        await query.message.edit_text(f"📍 **الوجهة:** {dest_name}\n\nاختر المسار:", reply_markup=reply_markup, parse_mode='Markdown')[cite: 1]
 
     elif data.startswith("price_"):
-        fare_code = data[6:]
+        fare_code = data[6:][cite: 1]
         if fare_code not in get_fare_prices():
             return
-        context.user_data['selected_fare_code'] = fare_code
-        context.user_data['step'] = "choose_family"
+        context.user_data['selected_fare_code'] = fare_code[cite: 1]
+        context.user_data['step'] = "choose_family"[cite: 1]
         
-        families = get_user_families(user_id)
-        keyboard = [[InlineKeyboardButton(f"👪 {f['family_name']}", callback_data=f"family_{f['id']}")] for f in families]
-        keyboard.append([InlineKeyboardButton("🧮 حساب سريع بدون عائلة", callback_data="quick_calc")])
-        keyboard.append([InlineKeyboardButton("➕ إنشاء عائلة جديدة", callback_data="new_family")])
-        keyboard.append([InlineKeyboardButton("🗑️ مسح قيد العائلة", callback_data="delete_family")])
-        keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_dest")])
+        families = get_user_families(user_id)[cite: 1]
+        keyboard = [[InlineKeyboardButton(f"👪 {f['family_name']}", callback_data=f"family_{f['id']}")] for f in families][cite: 1]
+        keyboard.append([InlineKeyboardButton("🧮 حساب سريع بدون عائلة", callback_data="quick_calc")])[cite: 1]
+        keyboard.append([InlineKeyboardButton("➕ إنشاء عائلة جديدة", callback_data="new_family")])[cite: 1]
+        keyboard.append([InlineKeyboardButton("🗑️ مسح قيد العائلة", callback_data="delete_family")])[cite: 1]
+        keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_dest")])[cite: 1]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.message.edit_text("👨‍👩‍👧‍👦 **اختر العائلة أو اختر الحساب السريع**:", reply_markup=reply_markup, parse_mode='Markdown')
+        await query.message.edit_text("👨‍👩‍👧‍👦 **اختر العائلة أو اختر الحساب السريع**:", reply_markup=reply_markup, parse_mode='Markdown')[cite: 1]
 
     elif data == "quick_calc":
-        context.user_data['step'] = "quick_calc"
-        await query.message.edit_text("🧮 **قسم الحساب السريع**\n\nأدخل تاريخ الميلاد مباشرة لحساب السعر فوراً:\nمثال: `15-05-1995` أو `15/05/1995` أو `15.05.1995`")
+        context.user_data['step'] = "quick_calc"[cite: 1]
+        await query.message.edit_text("🧮 **قسم الحساب السريع**\n\nأدخل تاريخ الميلاد مباشرة لحساب السعر فوراً:\nمثال: `15-05-1995` أو `15/05/1995` أو `15.05.1995`")[cite: 1]
 
     elif data == "new_family":
-        context.user_data['step'] = "create_family"
-        await query.message.edit_text("👪 أدخل اسم العائلة:")
+        context.user_data['step'] = "create_family"[cite: 1]
+        await query.message.edit_text("👪 أدخل اسم العائلة:")[cite: 1]
 
     elif data == "delete_family":
-        families = get_user_families(user_id)
+        families = get_user_families(user_id)[cite: 1]
         if not families:
-            await query.message.edit_text("⚠️ لا توجد عائلات لمسحها!")
+            await query.message.edit_text("⚠️ لا توجد عائلات لمسحها!")[cite: 1]
             return
-        context.user_data['delete_mode'] = 'family'
-        context.user_data['selected_families_to_delete'] = []
-        keyboard = [[InlineKeyboardButton(f"☐ {f['family_name']}", callback_data=f"del_family_{f['id']}")] for f in families]
-        keyboard.append([InlineKeyboardButton("🗑️ مسح العائلات المحددة", callback_data="confirm_delete_family")])
-        keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family_list")])
+        context.user_data['delete_mode'] = 'family'[cite: 1]
+        context.user_data['selected_families_to_delete'] = [][cite: 1]
+        keyboard = [[InlineKeyboardButton(f"☐ {f['family_name']}", callback_data=f"del_family_{f['id']}")] for f in families][cite: 1]
+        keyboard.append([InlineKeyboardButton("🗑️ مسح العائلات المحددة", callback_data="confirm_delete_family")])[cite: 1]
+        keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family_list")])[cite: 1]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.message.edit_text("☐ اختر العائلات المراد مسحها:", reply_markup=reply_markup, parse_mode='Markdown')
+        await query.message.edit_text("☐ اختر العائلات المراد مسحها:", reply_markup=reply_markup, parse_mode='Markdown')[cite: 1]
 
     elif data.startswith("del_family_"):
-        family_id = int(data.split("_")[2])
-        selected = context.user_data.get('selected_families_to_delete', [])
+        family_id = int(data.split("_")[2])[cite: 1]
+        selected = context.user_data.get('selected_families_to_delete', [])[cite: 1]
         if family_id in selected:
-            selected.remove(family_id)
+            selected.remove(family_id)[cite: 1]
         else:
-            selected.append(family_id)
-        context.user_data['selected_families_to_delete'] = selected
+            selected.append(family_id)[cite: 1]
+        context.user_data['selected_families_to_delete'] = selected[cite: 1]
         
-        families = get_user_families(user_id)
+        families = get_user_families(user_id)[cite: 1]
         keyboard = []
         for f in families:
             is_selected = f['id'] in selected
             emoji = "✅" if is_selected else "☐"
-            keyboard.append([InlineKeyboardButton(f"{emoji} {f['family_name']}", callback_data=f"del_family_{f['id']}")])
-        keyboard.append([InlineKeyboardButton("🗑️ مسح العائلات المحددة", callback_data="confirm_delete_family")])
-        keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family_list")])
+            keyboard.append([InlineKeyboardButton(f"{emoji} {f['family_name']}", callback_data=f"del_family_{f['id']}")])[cite: 1]
+        keyboard.append([InlineKeyboardButton("🗑️ مسح العائلات المحددة", callback_data="confirm_delete_family")])[cite: 1]
+        keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family_list")])[cite: 1]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.message.edit_text(f"✅ تم تحديد {len(selected)} عائلة", reply_markup=reply_markup, parse_mode='Markdown')
+        await query.message.edit_text(f"✅ تم تحديد {len(selected)} عائلة", reply_markup=reply_markup, parse_mode='Markdown')[cite: 1]
 
     elif data == "confirm_delete_family":
-        selected = context.user_data.get('selected_families_to_delete', [])
+        selected = context.user_data.get('selected_families_to_delete', [])[cite: 1]
         if not selected:
-            await query.message.edit_text("⚠️ لم يتم تحديد أي عائلة!")
+            await query.message.edit_text("⚠️ لم يتم تحديد أي عائلة!")[cite: 1]
             return
-        delete_families(selected)
-        context.user_data['selected_families_to_delete'] = []
-        await query.message.edit_text(f"✅ تم مسح {len(selected)} عائلة بنجاح!")
-        await start(update, context)
+        delete_families(selected)[cite: 1]
+        context.user_data['selected_families_to_delete'] = [][cite: 1]
+        await query.message.edit_text(f"✅ تم مسح {len(selected)} عائلة بنجاح!")[cite: 1]
+        await start(update, context)[cite: 1]
 
     elif data.startswith("family_"):
-        family_id = int(data.split("_")[1])
-        context.user_data['selected_family'] = family_id
-        context.user_data['selected_passengers'] = []
-        passengers = get_family_passengers(family_id)
-        keyboard = [[InlineKeyboardButton(f"☐ {p['name']}", callback_data=f"toggle_{p['id']}")] for p in passengers]
-        keyboard.append([InlineKeyboardButton("➕ إضافة فرد جديد", callback_data=f"add_member_{family_id}")])
-        keyboard.append([InlineKeyboardButton("🗑️ حذف فرد من العائلة", callback_data=f"delete_member_{family_id}")])
-        keyboard.append([InlineKeyboardButton("💰 حساب السعر للمختارين", callback_data="calculate_selected")])
-        keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family_list")])
+        family_id = int(data.split("_")[1])[cite: 1]
+        context.user_data['selected_family'] = family_id[cite: 1]
+        context.user_data['selected_passengers'] = [][cite: 1]
+        passengers = get_family_passengers(family_id)[cite: 1]
+        keyboard = [[InlineKeyboardButton(f"☐ {p['name']}", callback_data=f"toggle_{p['id']}")] for p in passengers][cite: 1]
+        keyboard.append([InlineKeyboardButton("➕ إضافة فرد جديد", callback_data=f"add_member_{family_id}")])[cite: 1]
+        keyboard.append([InlineKeyboardButton("🗑️ حذف فرد من العائلة", callback_data=f"delete_member_{family_id}")])[cite: 1]
+        keyboard.append([InlineKeyboardButton("💰 حساب السعر للمختارين", callback_data="calculate_selected")])[cite: 1]
+        keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family_list")])[cite: 1]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.message.edit_text("☐ اختر الأفراد المطلوبين:", reply_markup=reply_markup, parse_mode='Markdown')
+        await query.message.edit_text("☐ اختر الأفراد المطلوبين:", reply_markup=reply_markup, parse_mode='Markdown')[cite: 1]
 
     elif data.startswith("delete_member_"):
-        family_id = int(data.split("_")[2])
-        context.user_data['delete_mode'] = 'member'
-        context.user_data['selected_family'] = family_id
-        passengers = get_family_passengers(family_id)
+        family_id = int(data.split("_")[2])[cite: 1]
+        context.user_data['delete_mode'] = 'member'[cite: 1]
+        context.user_data['selected_family'] = family_id[cite: 1]
+        passengers = get_family_passengers(family_id)[cite: 1]
         if not passengers:
-            await query.message.edit_text("⚠️ لا يوجد أفراد في هذه العائلة!")
+            await query.message.edit_text("⚠️ لا يوجد أفراد في هذه العائلة!")[cite: 1]
             return
-        context.user_data['selected_members_to_delete'] = []
-        keyboard = [[InlineKeyboardButton(f"☐ {p['name']}", callback_data=f"del_member_{p['id']}")] for p in passengers]
-        keyboard.append([InlineKeyboardButton("🗑️ مسح الأفراد المحددين", callback_data="confirm_delete_member")])
-        keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family_list")])
+        context.user_data['selected_members_to_delete'] = [][cite: 1]
+        keyboard = [[InlineKeyboardButton(f"☐ {p['name']}", callback_data=f"del_member_{p['id']}")] for p in passengers][cite: 1]
+        keyboard.append([InlineKeyboardButton("🗑️ مسح الأفراد المحددين", callback_data="confirm_delete_member")])[cite: 1]
+        keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family_list")])[cite: 1]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.message.edit_text("☐ اختر الأفراد المراد مسحهم:", reply_markup=reply_markup, parse_mode='Markdown')
+        await query.message.edit_text("☐ اختر الأفراد المراد مسحهم:", reply_markup=reply_markup, parse_mode='Markdown')[cite: 1]
 
     elif data.startswith("del_member_"):
-        passenger_id = int(data.split("_")[2])
-        selected = context.user_data.get('selected_members_to_delete', [])
+        passenger_id = int(data.split("_")[2])[cite: 1]
+        selected = context.user_data.get('selected_members_to_delete', [])[cite: 1]
         if passenger_id in selected:
-            selected.remove(passenger_id)
+            selected.remove(passenger_id)[cite: 1]
         else:
-            selected.append(passenger_id)
-        context.user_data['selected_members_to_delete'] = selected
+            selected.append(passenger_id)[cite: 1]
+        context.user_data['selected_members_to_delete'] = selected[cite: 1]
         
-        family_id = context.user_data['selected_family']
-        passengers = get_family_passengers(family_id)
+        family_id = context.user_data['selected_family'][cite: 1]
+        passengers = get_family_passengers(family_id)[cite: 1]
         keyboard = []
         for p in passengers:
             is_selected = p['id'] in selected
             emoji = "✅" if is_selected else "☐"
-            keyboard.append([InlineKeyboardButton(f"{emoji} {p['name']}", callback_data=f"del_member_{p['id']}")])
-        keyboard.append([InlineKeyboardButton("🗑️ مسح الأفراد المحددين", callback_data="confirm_delete_member")])
-        keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family_list")])
+            keyboard.append([InlineKeyboardButton(f"{emoji} {p['name']}", callback_data=f"del_member_{p['id']}")])[cite: 1]
+        keyboard.append([InlineKeyboardButton("🗑️ مسح الأفراد المحددين", callback_data="confirm_delete_member")])[cite: 1]
+        keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family_list")])[cite: 1]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.message.edit_text(f"✅ تم تحديد {len(selected)} فرد", reply_markup=reply_markup, parse_mode='Markdown')
+        await query.message.edit_text(f"✅ تم تحديد {len(selected)} فرد", reply_markup=reply_markup, parse_mode='Markdown')[cite: 1]
 
     elif data == "confirm_delete_member":
-        selected = context.user_data.get('selected_members_to_delete', [])
+        selected = context.user_data.get('selected_members_to_delete', [])[cite: 1]
         if not selected:
-            await query.message.edit_text("⚠️ لم يتم تحديد أي فرد!")
+            await query.message.edit_text("⚠️ لم يتم تحديد أي فرد!")[cite: 1]
             return
-        delete_passengers(selected)
-        context.user_data['selected_members_to_delete'] = []
-        await query.message.edit_text(f"✅ تم مسح {len(selected)} فرد بنجاح!")
+        delete_passengers(selected)[cite: 1]
+        context.user_data['selected_members_to_delete'] = [][cite: 1]
+        await query.message.edit_text(f"✅ تم مسح {len(selected)} فرد بنجاح!")[cite: 1]
         
-        family_id = context.user_data['selected_family']
-        passengers = get_family_passengers(family_id)
-        keyboard = [[InlineKeyboardButton(f"☐ {p['name']}", callback_data=f"toggle_{p['id']}")] for p in passengers]
-        keyboard.append([InlineKeyboardButton("➕ إضافة فرد جديد", callback_data=f"add_member_{family_id}")])
-        keyboard.append([InlineKeyboardButton("🗑️ حذف فرد من العائلة", callback_data=f"delete_member_{family_id}")])
-        keyboard.append([InlineKeyboardButton("💰 حساب السعر للمختارين", callback_data="calculate_selected")])
-        keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family_list")])
+        family_id = context.user_data['selected_family'][cite: 1]
+        passengers = get_family_passengers(family_id)[cite: 1]
+        keyboard = [[InlineKeyboardButton(f"☐ {p['name']}", callback_data=f"toggle_{p['id']}")] for p in passengers][cite: 1]
+        keyboard.append([InlineKeyboardButton("➕ إضافة فرد جديد", callback_data=f"add_member_{family_id}")])[cite: 1]
+        keyboard.append([InlineKeyboardButton("🗑️ حذف فرد من العائلة", callback_data=f"delete_member_{family_id}")])[cite: 1]
+        keyboard.append([InlineKeyboardButton("💰 حساب السعر للمختارين", callback_data="calculate_selected")])[cite: 1]
+        keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family_list")])[cite: 1]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.message.edit_text("☐ اختر الأفراد المطلوبين:", reply_markup=reply_markup, parse_mode='Markdown')
+        await query.message.edit_text("☐ اختر الأفراد المطلوبين:", reply_markup=reply_markup, parse_mode='Markdown')[cite: 1]
 
     elif data.startswith("toggle_"):
-        passenger_id = int(data.split("_")[1])
-        selected = context.user_data.get('selected_passengers', [])
+        passenger_id = int(data.split("_")[1])[cite: 1]
+        selected = context.user_data.get('selected_passengers', [])[cite: 1]
         
-        # جلب بيانات الراكب الفردي بطريقة آمنة الاتصال
         p = None
         with get_db() as conn:
             with conn.cursor(cursor_factory=DictCursor) as cur:
                 cur.execute("SELECT * FROM passengers WHERE id = %s", (passenger_id,))
                 row = cur.fetchone()
                 if row:
-                    p = dict(row)
+                    p = dict(row)[cite: 1]
         
         if p:
-            passenger_data = {'id': p['id'], 'name': p['name'], 'birth_date': p['birth_date']}
+            passenger_data = {'id': p['id'], 'name': p['name'], 'birth_date': p['birth_date']}[cite: 1]
             if passenger_id in [sp['id'] for sp in selected]:
-                selected = [sp for sp in selected if sp['id'] != passenger_id]
+                selected = [sp for sp in selected if sp['id'] != passenger_id][cite: 1]
             else:
-                selected.append(passenger_data)
+                selected.append(passenger_data)[cite: 1]
             
-            context.user_data['selected_passengers'] = selected
-            family_id = context.user_data['selected_family']
-            passengers = get_family_passengers(family_id)
+            context.user_data['selected_passengers'] = selected[cite: 1]
+            family_id = context.user_data['selected_family'][cite: 1]
+            passengers = get_family_passengers(family_id)[cite: 1]
             
             keyboard = []
             for p_item in passengers:
                 is_selected = any(sp['id'] == p_item['id'] for sp in selected)
                 emoji = "✅" if is_selected else "☐"
-                keyboard.append([InlineKeyboardButton(f"{emoji} {p_item['name']}", callback_data=f"toggle_{p_item['id']}")])
+                keyboard.append([InlineKeyboardButton(f"{emoji} {p_item['name']}", callback_data=f"toggle_{p_item['id']}")])[cite: 1]
             
-            keyboard.append([InlineKeyboardButton("➕ إضافة فرد جديد", callback_data=f"add_member_{family_id}")])
-            keyboard.append([InlineKeyboardButton("🗑️ حذف فرد من العائلة", callback_data=f"delete_member_{family_id}")])
-            keyboard.append([InlineKeyboardButton("💰 حساب السعر للمختارين", callback_data="calculate_selected")])
-            keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family_list")])
+            keyboard.append([InlineKeyboardButton("➕ إضافة فرد جديد", callback_data=f"add_member_{family_id}")])[cite: 1]
+            keyboard.append([InlineKeyboardButton("🗑️ حذف فرد من العائلة", callback_data=f"delete_member_{family_id}")])[cite: 1]
+            keyboard.append([InlineKeyboardButton("💰 حساب السعر للمختارين", callback_data="calculate_selected")])[cite: 1]
+            keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family_list")])[cite: 1]
             reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.message.edit_text(f"✅ تم تحديد {len(selected)} فرد", reply_markup=reply_markup, parse_mode='Markdown')
+            await query.message.edit_text(f"✅ تم تحديد {len(selected)} فرد", reply_markup=reply_markup, parse_mode='Markdown')[cite: 1]
 
     elif data == "calculate_selected":
-        selected = context.user_data.get('selected_passengers', [])
+        selected = context.user_data.get('selected_passengers', [])[cite: 1]
         if not selected:
-            await query.message.edit_text("⚠️ لم يتم تحديد أي فرد!")
+            await query.message.edit_text("⚠️ لم يتم تحديد أي فرد!")[cite: 1]
             return
         
-        fare = get_fare_prices().get(context.user_data.get('selected_fare_code'))
+        fare = get_fare_prices().get(context.user_data.get('selected_fare_code'))[cite: 1]
         if not fare:
-            await query.message.edit_text("⚠️ تعذر العثور على سعر هذه الرحلة. اختر الوجهة مرة أخرى.")
+            await query.message.edit_text("⚠️ تعذر العثور على سعر هذه الرحلة. اختر الوجهة مرة أخرى.")[cite: 1]
             return
-        price_base = fare['base_price']
+        price_base = fare['base_price'][cite: 1]
         rules = {
             "7-12": fare['price_7_12'],
             "13-26": fare['price_13_26'],
             "60-64": fare['price_60_64'],
             "+65": fare['price_65_plus'],
-        }
-        dest_name = context.user_data.get('selected_dest', 'غير محددة')
+        }[cite: 1]
+        dest_name = context.user_data.get('selected_dest', 'غير محددة')[cite: 1]
         
-        today = date.today()
+        today = date.today()[cite: 1]
         results = []
         grand_total = 0
         
         for p in selected:
             try:
-                dob = parse_birth_date(p['birth_date'])
-                age = calculate_railway_age(dob, today)
+                dob = parse_birth_date(p['birth_date'])[cite: 1]
+                age = calculate_railway_age(dob, today)[cite: 1]
                 
                 if age < 7:
-                    results.append(f"👶 {p['name']} | {p['birth_date']} | العمر: {age} | **مجاناً** (لا يحتاج تذكرة)")
+                    results.append(f"👶 {p['name']} | {p['birth_date']} | العمر: {age} | **مجاناً** (لا يحتاج تذكرة)")[cite: 1]
                     continue
                 
                 if 7 <= age <= 12:
-                    price = rules.get("7-12", price_base)
+                    price = rules.get("7-12", price_base)[cite: 1]
                 elif 13 <= age <= 26:
-                    price = rules.get("13-26", price_base)
+                    price = rules.get("13-26", price_base)[cite: 1]
                 elif 60 <= age <= 64:
-                    price = rules.get("60-64", price_base)
+                    price = rules.get("60-64", price_base)[cite: 1]
                 elif age >= 65:
-                    price = rules.get("+65", price_base)
+                    price = rules.get("+65", price_base)[cite: 1]
                 else:
-                    price = price_base
+                    price = price_base[cite: 1]
                 
-                final_price = price + OFFICE_PROFIT
-                grand_total += final_price
-                results.append(f"👤 {p['name']} | {p['birth_date']} | العمر: {age} | **{final_price}** ليرة")
+                final_price = price + OFFICE_PROFIT[cite: 1]
+                grand_total += final_price[cite: 1]
+                results.append(f"👤 {p['name']} | {p['birth_date']} | العمر: {age} | **{final_price}** ليرة")[cite: 1]
             except:
-                results.append(f"❌ {p['name']} - خطأ في التاريخ")
+                results.append(f"❌ {p['name']} - خطأ في التاريخ")[cite: 1]
         
-        response = f"📍 **الوجهة:** {dest_name}\n\n📊 **نتيجة الحساب**\n\n" + "\n".join(results)
-        response += f"\n\n💰 **المجموع الكلي: {grand_total} ليرة تركي**"
-        await query.message.edit_text(response, parse_mode='Markdown')
+        response = f"📍 **الوجهة:** {dest_name}\n\n📊 **نتيجة الحساب**\n\n" + "\n".join(results)[cite: 1]
+        response += f"\n\n💰 **المجموع الكلي: {grand_total} ليرة تركي**"[cite: 1]
+        await query.message.edit_text(response, parse_mode='Markdown')[cite: 1]
 
     elif data.startswith("add_member_"):
-        family_id = int(data.split("_")[2])
-        context.user_data['selected_family'] = family_id
-        context.user_data['step'] = "add_member"
-        await query.message.edit_text("👤 أدخل اسم الشخص + تاريخ الميلاد:\nمثال: `أحمد 15-05-1995` أو `أحمد 15/05/1995`")
+        family_id = int(data.split("_")[2])[cite: 1]
+        context.user_data['selected_family'] = family_id[cite: 1]
+        context.user_data['step'] = "add_member"[cite: 1]
+        await query.message.edit_text("👤 أدخل اسم الشخص + تاريخ الميلاد:\nمثال: `أحمد 15-05-1995` أو `أحمد 15/05/1995`")[cite: 1]
 
     elif data == "back_to_family_list":
-        context.user_data['step'] = "choose_family"
-        families = get_user_families(user_id)
-        keyboard = [[InlineKeyboardButton(f"👪 {f['family_name']}", callback_data=f"family_{f['id']}")] for f in families]
-        keyboard.append([InlineKeyboardButton("🧮 حساب سريع بدون عائلة", callback_data="quick_calc")])
-        keyboard.append([InlineKeyboardButton("➕ إنشاء عائلة جديدة", callback_data="new_family")])
-        keyboard.append([InlineKeyboardButton("🗑️ مسح قيد العائلة", callback_data="delete_family")])
-        keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_dest")])
+        context.user_data['step'] = "choose_family"[cite: 1]
+        families = get_user_families(user_id)[cite: 1]
+        keyboard = [[InlineKeyboardButton(f"👪 {f['family_name']}", callback_data=f"family_{f['id']}")] for f in families][cite: 1]
+        keyboard.append([InlineKeyboardButton("🧮 حساب سريع بدون عائلة", callback_data="quick_calc")])[cite: 1]
+        keyboard.append([InlineKeyboardButton("➕ إنشاء عائلة جديدة", callback_data="new_family")])[cite: 1]
+        keyboard.append([InlineKeyboardButton("🗑️ مسح قيد العائلة", callback_data="delete_family")])[cite: 1]
+        keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_dest")])[cite: 1]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.message.edit_text("👨‍👩‍👧‍👦 **اختر العائلة أو اختر الحساب السريع**:", reply_markup=reply_markup, parse_mode='Markdown')
+        await query.message.edit_text("👨‍👩‍👧‍👦 **اختر العائلة أو اختر الحساب السريع**:", reply_markup=reply_markup, parse_mode='Markdown')[cite: 1]
 
     elif data == "back_to_dest":
-        await start(update, context)
+        await start(update, context)[cite: 1]
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    step = context.user_data.get('step')
-    user_id = update.effective_user.id
+    text = update.message.text.strip()[cite: 1]
+    step = context.user_data.get('step')[cite: 1]
+    user_id = update.effective_user.id[cite: 1]
 
-    # This shortcut must work from every screen, including while the user is in
-    # a multi-step flow such as adding a family or entering a birth date.
     if is_destination_request(text):
-        context.user_data.pop('step', None)
-        await start(update, context)
+        context.user_data.pop('step', None)[cite: 1]
+        await start(update, context)[cite: 1]
         return
 
     if step in ("admin_update_prices", "admin_update_one_price", "admin_add_fare"):
         if not is_admin(user_id):
-            context.user_data.pop('step', None)
-            await update.message.reply_text("⛔ هذا الأمر مخصص لمدير البوت فقط.")
+            context.user_data.pop('step', None)[cite: 1]
+            await update.message.reply_text("⛔ هذا الأمر مخصص لمدير البوت فقط.")[cite: 1]
             return
         try:
-            updates = parse_price_updates(text, allow_new=step == "admin_add_fare")
+            updates = parse_price_updates(text, allow_new=step == "admin_add_fare")[cite: 1]
             if step in ("admin_update_one_price", "admin_add_fare") and len(updates) != 1:
-                raise ValueError("هذا الأمر يقبل سطرًا واحدًا فقط")
-            current_prices = get_fare_prices()
+                raise ValueError("هذا الأمر يقبل سطرًا واحدًا فقط")[cite: 1]
+            current_prices = get_fare_prices()[cite: 1]
             preview = []
             for fare_code, prices in updates.items():
-                old_price = current_prices.get(fare_code, {}).get('base_price', 'جديدة')
-                category = fare_code.split('_')[1]
-                preview.append(f"فئة {category}: {old_price} ← {prices['base_price']}")
+                old_price = current_prices.get(fare_code, {}).get('base_price', 'جديدة')[cite: 1]
+                category = fare_code.split('_')[1][cite: 1]
+                preview.append(f"فئة {category}: {old_price} ← {prices['base_price']}")[cite: 1]
 
-            context.user_data['pending_price_updates'] = updates
-            context.user_data['step'] = 'admin_confirm_price_updates'
+            context.user_data['pending_price_updates'] = updates[cite: 1]
+            context.user_data['step'] = 'admin_confirm_price_updates'[cite: 1]
             keyboard = [
                 [InlineKeyboardButton("✅ تأكيد الحفظ", callback_data="confirm_price_updates")],
                 [InlineKeyboardButton("✖️ إلغاء", callback_data="cancel_price_updates")],
-            ]
+            ][cite: 1]
             await update.message.reply_text(
                 "📋 **معاينة التحديث**\n\n" + "\n".join(preview) +
                 "\n\nهل تريد حفظ هذه الأسعار؟",
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode='Markdown',
-            )
+            )[cite: 1]
         except ValueError as error:
             await update.message.reply_text(
                 f"❌ {error}\n\nأعد إرسال الجدول بالصيغة المطلوبة، أو استخدم /update_prices للبدء من جديد."
-            )
+            )[cite: 1]
 
     elif step == "admin_add_destination":
         if not is_admin(user_id):
-            context.user_data.pop('step', None)
+            context.user_data.pop('step', None)[cite: 1]
             return
-        route_name = text.strip()
+        route_name = text.strip()[cite: 1]
         if len(route_name) < 3:
-            await update.message.reply_text("❌ اسم الوجهة قصير جدًا. أرسله مرة أخرى.")
+            await update.message.reply_text("❌ اسم الوجهة قصير جدًا. أرسله مرة أخرى.")[cite: 1]
             return
-        route_id = create_route(route_name)
+        route_id = create_route(route_name)[cite: 1]
         if route_id:
-            context.user_data.pop('step', None)
+            context.user_data.pop('step', None)[cite: 1]
             await update.message.reply_text(
                 f"✅ تمت إضافة وجهة **{route_name}**.\nاستخدم /add_trip لإضافة السعر والوقت.",
                 parse_mode='Markdown',
-            )
+            )[cite: 1]
         else:
-            await update.message.reply_text("⚠️ هذه الوجهة موجودة بالفعل، أو تعذر حفظها.")
+            await update.message.reply_text("⚠️ هذه الوجهة موجودة بالفعل، أو تعذر حفظها.")[cite: 1]
 
     elif step == "admin_add_trip":
         if not is_admin(user_id):
-            context.user_data.pop('step', None)
+            context.user_data.pop('step', None)[cite: 1]
             return
         try:
-            parts = [part.strip() for part in text.split('|')]
+            parts = [part.strip() for part in text.split('|')][cite: 1]
             if len(parts) != 3:
-                raise ValueError("استخدم 3 قيم مفصولة بعلامة |")
-            category, departure_label, service_label = parts
-            category = category.replace('fare_', '')
+                raise ValueError("استخدم 3 قيم مفصولة بعلامة |")[cite: 1]
+            category, departure_label, service_label = parts[cite: 1]
+            category = category.replace('fare_', '')[cite: 1]
             if not category.isdigit() or not departure_label:
-                raise ValueError("رمز السعر والوقت مطلوبان")
-            fare_code = f"fare_{category}"
+                raise ValueError("رمز السعر والوقت مطلوبان")[cite: 1]
+            fare_code = f"fare_{category}"[cite: 1]
             if fare_code not in get_fare_prices():
-                raise ValueError(f"فئة السعر {category} غير موجودة. أضفها أولًا عبر /add_fare")
-            service_types = {'بطيء': 'slow', 'slow': 'slow', 'سريع': 'fast', 'fast': 'fast', 'عادي': 'regular', 'regular': 'regular'}
-            service_type = service_types.get(service_label.lower())
+                raise ValueError(f"فئة السعر {category} غير موجودة. أضفها أولًا عبر /add_fare")[cite: 1]
+            service_types = {'بطيء': 'slow', 'slow': 'slow', 'سريع': 'fast', 'fast': 'fast', 'عادي': 'regular', 'regular': 'regular'}[cite: 1]
+            service_type = service_types.get(service_label.lower())[cite: 1]
             if not service_type:
-                raise ValueError("نوع القطار يجب أن يكون بطيء أو سريع أو عادي")
-            route_id = context.user_data.get('selected_admin_route_id')
+                raise ValueError("نوع القطار يجب أن يكون بطيء أو سريع أو عادي")[cite: 1]
+            route_id = context.user_data.get('selected_admin_route_id')[cite: 1]
             if not route_id:
-                raise ValueError("اختر الوجهة من جديد عبر /add_trip")
-            trip_id = create_route_trip(route_id, fare_code, departure_label, service_type)
+                raise ValueError("اختر الوجهة من جديد عبر /add_trip")[cite: 1]
+            trip_id = create_route_trip(route_id, fare_code, departure_label, service_type)[cite: 1]
             if trip_id:
-                await update.message.reply_text("✅ تمت إضافة الرحلة. يمكنك إرسال سطر رحلة آخر لنفس الوجهة، أو استخدام /add_trip لاختيار وجهة أخرى.")
+                await update.message.reply_text("✅ تمت إضافة الرحلة. يمكنك إرسال سطر رحلة آخر لنفس الوجهة، أو استخدام /add_trip لاختيار وجهة أخرى.")[cite: 1]
             else:
-                await update.message.reply_text("⚠️ هذه الرحلة موجودة بالفعل.")
+                await update.message.reply_text("⚠️ هذه الرحلة موجودة بالفعل.")[cite: 1]
         except ValueError as error:
-            await update.message.reply_text(f"❌ {error}\nمثال: `535 | 01:28 | بطيء`", parse_mode='Markdown')
+            await update.message.reply_text(f"❌ {error}\nمثال: `535 | 01:28 | بطيء`", parse_mode='Markdown')[cite: 1]
 
     elif step == "quick_calc":
         try:
-            dob = parse_birth_date(text)
-            birth_display = normalize_birth_date(text)
-            today = date.today()
-            age = calculate_railway_age(dob, today)
+            dob = parse_birth_date(text)[cite: 1]
+            birth_display = normalize_birth_date(text)[cite: 1]
+            today = date.today()[cite: 1]
+            age = calculate_railway_age(dob, today)[cite: 1]
             
-            fare = get_fare_prices().get(context.user_data.get('selected_fare_code'))
+            fare = get_fare_prices().get(context.user_data.get('selected_fare_code'))[cite: 1]
             if not fare:
-                await update.message.reply_text("⚠️ تعذر العثور على سعر هذه الرحلة. اختر الوجهة مرة أخرى.")
+                await update.message.reply_text("⚠️ تعذر العثور على سعر هذه الرحلة. اختر الوجهة مرة أخرى.")[cite: 1]
                 return
-            price_base = fare['base_price']
+            price_base = fare['base_price'][cite: 1]
             rules = {
                 "7-12": fare['price_7_12'],
                 "13-26": fare['price_13_26'],
                 "60-64": fare['price_60_64'],
                 "+65": fare['price_65_plus'],
-            }
-            dest_name = context.user_data.get('selected_dest', 'غير محددة')
+            }[cite: 1]
+            dest_name = context.user_data.get('selected_dest', 'غير محددة')[cite: 1]
             if age < 7:
-                response = f"📍 **الوجهة:** {dest_name}\n\n📊 **نتيجة الحساب**\n\n"
-                response += f"👶 زبون سريع | {birth_display} | العمر: {age} | **مجاناً** (لا يحتاج تذكرة)\n\n"
-                response += f"💰 **المجموع الكلي: 0 ليرة تركي**"
+                response = f"📍 **الوجهة:** {dest_name}\n\n📊 **نتيجة الحساب**\n\n"[cite: 1]
+                response += f"👶 زبون سريع | {birth_display} | العمر: {age} | **مجاناً** (لا يحتاج تذكرة)\n\n"[cite: 1]
+                response += f"💰 **المجموع الكلي: 0 ليرة تركي**"[cite: 1]
             else:
                 if 7 <= age <= 12:
-                    price = rules.get("7-12", price_base)
+                    price = rules.get("7-12", price_base)[cite: 1]
                 elif 13 <= age <= 26:
-                    price = rules.get("13-26", price_base)
+                    price = rules.get("13-26", price_base)[cite: 1]
                 elif 60 <= age <= 64:
-                    price = rules.get("60-64", price_base)
+                    price = rules.get("60-64", price_base)[cite: 1]
                 elif age >= 65:
-                    price = rules.get("+65", price_base)
+                    price = rules.get("+65", price_base)[cite: 1]
                 else:
-                    price = price_base
+                    price = price_base[cite: 1]
                 
-                final_price = price + OFFICE_PROFIT
+                final_price = price + OFFICE_PROFIT[cite: 1]
                 
-                response = f"📍 **الوجهة:** {dest_name}\n\n📊 **نتيجة الحساب**\n\n"
-                response += f"👤 زبون سريع | {birth_display} | العمر: {age} | **{final_price}** ليرة\n\n"
-                response += f"💰 **المجموع الكلي: {final_price} ليرة تركي**"
+                response = f"📍 **الوجهة:** {dest_name}\n\n📊 **نتيجة الحساب**\n\n"[cite: 1]
+                response += f"👤 زبون سريع | {birth_display} | العمر: {age} | **{final_price}** ليرة\n\n"[cite: 1]
+                response += f"💰 **المجموع الكلي: {final_price} ليرة تركي**"[cite: 1]
             
             keyboard = [
                 [InlineKeyboardButton("🧮 حساب تاريخ آخر", callback_data="quick_calc")],
                 [InlineKeyboardButton("⬅️ عودة لقائمة العوائل", callback_data="back_to_family_list")]
-            ]
+            ][cite: 1]
             reply_markup = InlineKeyboardMarkup(keyboard)
-            await update.message.reply_text(response, reply_markup=reply_markup, parse_mode='Markdown')
+            await update.message.reply_text(response, reply_markup=reply_markup, parse_mode='Markdown')[cite: 1]
             
         except ValueError:
-            await update.message.reply_text("❌ التنسيق خاطئ! يرجى إدخال التاريخ بالطريقة التالية:\nمثال: `15-05-1995` أو `15/05/1995`")
+            await update.message.reply_text("❌ التنسيق خاطئ! يرجى إدخال التاريخ بالطريقة التالية:\nمثال: `15-05-1995` أو `15/05/1995`")[cite: 1]
 
     elif step == "create_family":
-        family_id = create_family(user_id, text)
+        family_id = create_family(user_id, text)[cite: 1]
         if family_id:
-            await update.message.reply_text(f"✅ تم إنشاء العائلة: **{text}**")
-            context.user_data['selected_family'] = family_id
-            context.user_data['step'] = "add_member"
-            await update.message.reply_text("👤 أدخل اسم الشخص + تاريخ الميلاد:\nمثال: `أحمد 15-05-1995` أو `أحمد 15/05/1995`")
+            await update.message.reply_text(f"✅ تم إنشاء العائلة: **{text}**")[cite: 1]
+            context.user_data['selected_family'] = family_id[cite: 1]
+            context.user_data['step'] = "add_member"[cite: 1]
+            await update.message.reply_text("👤 أدخل اسم الشخص + تاريخ الميلاد:\nمثال: `أحمد 15-05-1995` أو `أحمد 15/05/1995`")[cite: 1]
         else:
-            await update.message.reply_text("❌ حدث خطأ أثناء إنشاء العائلة.")
+            await update.message.reply_text("❌ حدث خطأ أثناء إنشاء العائلة.")[cite: 1]
 
     elif step == "add_member":
         try:
-            name, birth_date_raw = text.rsplit(maxsplit=1)
-            birth_date = normalize_birth_date(birth_date_raw)
-            family_id = context.user_data['selected_family']
-            add_passenger_to_family(family_id, user_id, name, birth_date)
-            await update.message.reply_text(f"✅ تم إضافة **{name}**")
+            name, birth_date_raw = text.rsplit(maxsplit=1)[cite: 1]
+            birth_date = normalize_birth_date(birth_date_raw)[cite: 1]
+            family_id = context.user_data['selected_family'][cite: 1]
+            add_passenger_to_family(family_id, user_id, name, birth_date)[cite: 1]
+            await update.message.reply_text(f"✅ تم إضافة **{name}**")[cite: 1]
             
-            passengers = get_family_passengers(family_id)
-            keyboard = [[InlineKeyboardButton(f"☐ {p['name']}", callback_data=f"toggle_{p['id']}")] for p in passengers]
-            keyboard.append([InlineKeyboardButton("➕ إضافة فرد جديد", callback_data=f"add_member_{family_id}")])
-            keyboard.append([InlineKeyboardButton("🗑️ حذف فرد من العائلة", callback_data=f"delete_member_{family_id}")])
-            keyboard.append([InlineKeyboardButton("💰 حساب السعر للمختارين", callback_data="calculate_selected")])
-            keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family_list")])
+            passengers = get_family_passengers(family_id)[cite: 1]
+            keyboard = [[InlineKeyboardButton(f"☐ {p['name']}", callback_data=f"toggle_{p['id']}")] for p in passengers][cite: 1]
+            keyboard.append([InlineKeyboardButton("➕ إضافة فرد جديد", callback_data=f"add_member_{family_id}")])[cite: 1]
+            keyboard.append([InlineKeyboardButton("🗑️ حذف فرد من العائلة", callback_data="delete_member_" + str(family_id))])[cite: 1]
+            keyboard.append([InlineKeyboardButton("💰 حساب السعر للمختارين", callback_data="calculate_selected")])[cite: 1]
+            keyboard.append([InlineKeyboardButton("⬅️ العودة", callback_data="back_to_family_list")])[cite: 1]
             reply_markup = InlineKeyboardMarkup(keyboard)
-            await update.message.reply_text("☐ اختر الأفراد المطلوبين:", reply_markup=reply_markup, parse_mode='Markdown')
+            await update.message.reply_text("☐ اختر الأفراد المطلوبين:", reply_markup=reply_markup, parse_mode='Markdown')[cite: 1]
         except:
-            await update.message.reply_text("❌ التنسيق خاطئ\nمثال: أحمد 15-05-1995 أو أحمد 15/05/1995")
+            await update.message.reply_text("❌ التنسيق خاطئ\nمثال: أحمد 15-05-1995 أو أحمد 15/05/1995")[cite: 1]
     else:
-        await update.message.reply_text("⚠️ استخدم الأزرار أعلاه")
+        await update.message.reply_text("⚠️ استخدم الأزرار أعلاه")[cite: 1]
 
 # ====================== تشغيل البوت والخدمات ======================
 if __name__ == '__main__':
-    # جلب التوكن الحقيقي من المتغيرات البيئية لضمان الأمان
+    logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)[cite: 1]
+    
+    # التهيئة المبدئية لقواعد البيانات عند تشغيل الملف
+    if DATABASE_URL:
+        init_db()
+        init_fare_prices()
+        init_route_data()
+    else:
+        logging.warning("⚠️ DATABASE_URL isn't set yet. DB setup will be deferred.")
+
     TOKEN = os.getenv("TELEGRAM_TOKEN")
     if not TOKEN:
-        # التوكن الافتراضي الخاص بك في حال عدم تعيين المتغير البيئي للسرعة أثناء الفحص
-        raise RuntimeError("TELEGRAM_TOKEN is not configured")
+        logging.error("❌ TELEGRAM_TOKEN environment variable is missing!")
+    else:
+        bot_app = Application.builder().token(TOKEN).build()[cite: 1]
+        bot_app.add_handler(CommandHandler("start", start))[cite: 1]
+        bot_app.add_handler(CommandHandler("update_prices", update_prices_command))[cite: 1]
+        bot_app.add_handler(CommandHandler("update_price", update_one_price_command))[cite: 1]
+        bot_app.add_handler(CommandHandler("add_destination", add_destination_command))[cite: 1]
+        bot_app.add_handler(CommandHandler("add_trip", add_trip_command))[cite: 1]
+        bot_app.add_handler(CommandHandler("add_fare", add_fare_command))[cite: 1]
+        bot_app.add_handler(CallbackQueryHandler(handle_callback))[cite: 1]
+        bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))[cite: 1]
         
-    logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-    
-    bot_app = Application.builder().token(TOKEN).build()
-    bot_app.add_handler(CommandHandler("start", start))
-    bot_app.add_handler(CommandHandler("update_prices", update_prices_command))
-    bot_app.add_handler(CommandHandler("update_price", update_one_price_command))
-    bot_app.add_handler(CommandHandler("add_destination", add_destination_command))
-    bot_app.add_handler(CommandHandler("add_trip", add_trip_command))
-    bot_app.add_handler(CommandHandler("add_fare", add_fare_command))
-    bot_app.add_handler(CallbackQueryHandler(handle_callback))
-    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    
-    keep_alive()
-    print("🚀 البوت يعمل الآن مع قاعدة بيانات PostgreSQL ومحمّي من تسريب الاتصالات!")
-    bot_app.run_polling()
+        keep_alive()[cite: 1]
+        print("🚀 البوت يعمل الآن مع قاعدة بيانات PostgreSQL ومحمّي من تسريب الاتصالات!")[cite: 1]
+        bot_app.run_polling()[cite: 1]
