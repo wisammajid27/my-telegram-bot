@@ -32,25 +32,46 @@ def keep_alive():
 
 # ====================== إدارة قاعدة البيانات (PostgreSQL) ======================
 DATABASE_URL = os.getenv("DATABASE_URL")
+DB_AVAILABLE = True  # يتحدث تلقائياً حسب حالة الاتصال
 
 @contextmanager
 def get_db():
-    """إدارة اتصال قاعدة البيانات بشكل آمن يضمن الإغلاق التلقائي"""
+    """إدارة اتصال قاعدة البيانات بشكل آمن. يرجع None لو فشل الاتصال بدل ما ينهار البوت."""
+    global DB_AVAILABLE
     if not DATABASE_URL:
-        raise ValueError("DATABASE_URL environment variable is not set!")
-    conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+        DB_AVAILABLE = False
+        yield None
+        return
+
+    conn = None
     try:
-        yield conn
+        conn = psycopg2.connect(
+            DATABASE_URL,
+            sslmode='require',
+            connect_timeout=5
+        )
+        DB_AVAILABLE = True
+        try:
+            yield conn
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            logging.error(f"Database error: {e}")
+            raise
+        finally:
+            if conn:
+                conn.close()
     except Exception as e:
-        conn.rollback()
-        logging.error(f"Database error: {e}")
-        raise
-    finally:
-        conn.close()
+        DB_AVAILABLE = False
+        logging.warning(f"Database unavailable (will use static data): {e}")
+        yield None
 
 def init_db():
     try:
         with get_db() as conn:
+            if conn is None:
+                logging.warning("Skipping init_db: database unavailable")
+                return
             with conn.cursor() as cur:
                 cur.execute('''
                     CREATE TABLE IF NOT EXISTS families (
@@ -174,6 +195,9 @@ def fare_code_from_original_price(original_price: int) -> str:
 def init_fare_prices():
     try:
         with get_db() as conn:
+            if conn is None:
+                logging.warning("Skipping init_fare_prices: database unavailable")
+                return
             with conn.cursor() as cur:
                 for base_price, rules in PRICES_RULES.items():
                     cur.execute('''
@@ -192,16 +216,50 @@ def init_fare_prices():
         logging.error(f"Failed to init fare prices: {e}")
 
 def get_fare_prices():
+    """يرجع الأسعار من قاعدة البيانات، ولو فشلت يرجع من PRICES_RULES الثابتة"""
     with get_db() as conn:
+        if conn is None:
+            # Fallback
+            result = {}
+            for base_price, rules in PRICES_RULES.items():
+                fare_code = fare_code_from_original_price(base_price)
+                result[fare_code] = {
+                    'fare_code': fare_code,
+                    'base_price': base_price,
+                    'price_7_12': rules.get("7-12", base_price),
+                    'price_13_26': rules.get("13-26", base_price),
+                    'price_60_64': rules.get("60-64", base_price),
+                    'price_65_plus': rules.get("+65", base_price),
+                }
+            return result
+
         with conn.cursor(cursor_factory=DictCursor) as cur:
             cur.execute('''
                 SELECT fare_code, base_price, price_7_12, price_13_26, price_60_64, price_65_plus
                 FROM fare_prices
             ''')
-            return {row['fare_code']: dict(row) for row in cur.fetchall()}
+            rows = cur.fetchall()
+            if rows:
+                return {row['fare_code']: dict(row) for row in rows}
+            # لو فاضي نرجع الثابتة
+            result = {}
+            for base_price, rules in PRICES_RULES.items():
+                fare_code = fare_code_from_original_price(base_price)
+                result[fare_code] = {
+                    'fare_code': fare_code,
+                    'base_price': base_price,
+                    'price_7_12': rules.get("7-12", base_price),
+                    'price_13_26': rules.get("13-26", base_price),
+                    'price_60_64': rules.get("60-64", base_price),
+                    'price_65_plus': rules.get("+65", base_price),
+                }
+            return result
 
 def save_fare_prices(updates):
     with get_db() as conn:
+        if conn is None:
+            logging.warning("Cannot save fare prices: database unavailable")
+            return
         with conn.cursor() as cur:
             for fare_code, prices in updates.items():
                 cur.execute('''
@@ -221,6 +279,9 @@ def save_fare_prices(updates):
 def init_route_data():
     try:
         with get_db() as conn:
+            if conn is None:
+                logging.warning("Skipping init_route_data: database unavailable")
+                return
             with conn.cursor() as cur:
                 cur.execute("SELECT COUNT(*) FROM travel_routes")
                 if cur.fetchone()[0] > 0:
@@ -245,13 +306,33 @@ def init_route_data():
         logging.error(f"Failed to init routes: {e}")
 
 def get_routes():
+    """يرجع الوجهات من قاعدة البيانات، ولو فشلت يرجع من البيانات الثابتة ROUTES"""
     with get_db() as conn:
+        if conn is None:
+            # Fallback: استخدم البيانات الثابتة
+            return [
+                {'id': idx, 'route_name': name}
+                for idx, name in enumerate(ROUTES.keys())
+            ]
         with conn.cursor(cursor_factory=DictCursor) as cur:
             cur.execute("SELECT id, route_name FROM travel_routes ORDER BY sort_order, id")
-            return [dict(row) for row in cur.fetchall()]
+            rows = cur.fetchall()
+            if rows:
+                return [dict(row) for row in rows]
+            # لو الجدول فاضي نرجع الثابتة
+            return [
+                {'id': idx, 'route_name': name}
+                for idx, name in enumerate(ROUTES.keys())
+            ]
 
 def get_route(route_id):
     with get_db() as conn:
+        if conn is None:
+            # Fallback
+            names = list(ROUTES.keys())
+            if 0 <= route_id < len(names):
+                return {'id': route_id, 'route_name': names[route_id]}
+            return None
         with conn.cursor(cursor_factory=DictCursor) as cur:
             cur.execute("SELECT id, route_name FROM travel_routes WHERE id = %s", (route_id,))
             row = cur.fetchone()
@@ -259,6 +340,24 @@ def get_route(route_id):
 
 def get_route_trips(route_id):
     with get_db() as conn:
+        if conn is None:
+            # Fallback من البيانات الثابتة
+            names = list(ROUTES.keys())
+            if not (0 <= route_id < len(names)):
+                return []
+            route_name = names[route_id]
+            groups = ROUTES.get(route_name, [])
+            result = []
+            for group in groups:
+                service_type = 'fast' if group.get('fast') else 'slow' if group.get('slow') else 'regular'
+                fare_code = fare_code_from_original_price(group['price'])
+                result.append({
+                    'fare_code': fare_code,
+                    'service_type': service_type,
+                    'times': group['times']
+                })
+            return result
+
         with conn.cursor(cursor_factory=DictCursor) as cur:
             cur.execute('''
                 SELECT fare_code, departure_label, service_type
@@ -277,6 +376,9 @@ def get_route_trips(route_id):
 
 def create_route(route_name):
     with get_db() as conn:
+        if conn is None:
+            logging.warning("Cannot create route: database unavailable")
+            return None
         with conn.cursor() as cur:
             cur.execute('''
                 INSERT INTO travel_routes (route_name, sort_order, created_at)
@@ -290,6 +392,9 @@ def create_route(route_name):
 
 def create_route_trip(route_id, fare_code, departure_label, service_type):
     with get_db() as conn:
+        if conn is None:
+            logging.warning("Cannot create route trip: database unavailable")
+            return None
         with conn.cursor() as cur:
             cur.execute('''
                 INSERT INTO route_trips (route_id, fare_code, departure_label, service_type, created_at)
@@ -463,18 +568,25 @@ def format_time_with_period(time_str: str) -> str:
 
 def get_user_families(user_id):
     with get_db() as conn:
+        if conn is None:
+            return []
         with conn.cursor(cursor_factory=DictCursor) as cur:
             cur.execute("SELECT * FROM families WHERE user_id = %s ORDER BY family_name", (user_id,))
             return [dict(row) for row in cur.fetchall()]
 
 def get_family_passengers(family_id):
     with get_db() as conn:
+        if conn is None:
+            return []
         with conn.cursor(cursor_factory=DictCursor) as cur:
             cur.execute("SELECT * FROM passengers WHERE family_id = %s ORDER BY name", (family_id,))
             return [dict(row) for row in cur.fetchall()]
 
 def create_family(user_id, family_name):
     with get_db() as conn:
+        if conn is None:
+            logging.warning("Cannot create family: database unavailable")
+            return None
         with conn.cursor() as cur:
             try:
                 cur.execute("INSERT INTO families (user_id, family_name, created_at) VALUES (%s, %s, %s) RETURNING id",
@@ -488,6 +600,9 @@ def create_family(user_id, family_name):
 
 def add_passenger_to_family(family_id, user_id, name, birth_date):
     with get_db() as conn:
+        if conn is None:
+            logging.warning("Cannot add passenger: database unavailable")
+            return
         with conn.cursor() as cur:
             cur.execute("INSERT INTO passengers (family_id, user_id, name, birth_date, created_at) VALUES (%s, %s, %s, %s, %s)",
                         (family_id, user_id, name, birth_date, datetime.now().isoformat()))
@@ -495,6 +610,9 @@ def add_passenger_to_family(family_id, user_id, name, birth_date):
 
 def delete_families(family_ids):
     with get_db() as conn:
+        if conn is None:
+            logging.warning("Cannot delete families: database unavailable")
+            return
         with conn.cursor() as cur:
             for fid in family_ids:
                 cur.execute("DELETE FROM passengers WHERE family_id = %s", (fid,))
@@ -503,6 +621,9 @@ def delete_families(family_ids):
 
 def delete_passengers(passenger_ids):
     with get_db() as conn:
+        if conn is None:
+            logging.warning("Cannot delete passengers: database unavailable")
+            return
         with conn.cursor() as cur:
             for pid in passenger_ids:
                 cur.execute("DELETE FROM passengers WHERE id = %s", (pid,))
@@ -513,8 +634,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton(route['route_name'], callback_data=f"dest_{route['id']}")]
                 for route in routes]
     reply_markup = InlineKeyboardMarkup(keyboard)
+
     text = "🚍 **مرحباً بك في بوت حجز التذاكر**\n\n🗂️ اختر الوجهة المطلوبة:"
-    
+    if not DB_AVAILABLE:
+        text += "\n\n⚠️ _قاعدة البيانات غير متاحة حالياً — يعمل البوت بالبيانات الأساسية. حفظ العائلات غير متوفر مؤقتاً._"
+
     if update.message:
         await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
     else:
@@ -747,11 +871,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         p = None
         with get_db() as conn:
-            with conn.cursor(cursor_factory=DictCursor) as cur:
-                cur.execute("SELECT * FROM passengers WHERE id = %s", (passenger_id,))
-                row = cur.fetchone()
-                if row:
-                    p = dict(row)
+            if conn is not None:
+                with conn.cursor(cursor_factory=DictCursor) as cur:
+                    cur.execute("SELECT * FROM passengers WHERE id = %s", (passenger_id,))
+                    row = cur.fetchone()
+                    if row:
+                        p = dict(row)
         
         if p:
             passenger_data = {'id': p['id'], 'name': p['name'], 'birth_date': p['birth_date']}
@@ -1057,5 +1182,5 @@ if __name__ == '__main__':
         bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
         
         keep_alive()
-        print("🚀 البوت يعمل الآن مع قاعدة بيانات PostgreSQL ومحمّي من تسريب الاتصالات!")
+        print("🚀 البوت يعمل الآن (مع دعم العمل بدون قاعدة بيانات عند انقطاعها)")
         bot_app.run_polling()
