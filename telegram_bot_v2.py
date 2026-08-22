@@ -1040,6 +1040,13 @@ if __name__ == '__main__':
         logging.error("❌ TELEGRAM_TOKEN environment variable is missing!")
     else:
         bot_app = Application.builder().token(TOKEN).build()
+
+        # ====================== معالج أخطاء Telegram ======================
+        async def error_handler(update, context):
+            logging.error(f"Update {update} caused error {context.error}", exc_info=context.error)
+
+        bot_app.add_error_handler(error_handler)
+
         bot_app.add_handler(CommandHandler("start", start))
         bot_app.add_handler(CommandHandler("update_prices", update_prices_command))
         bot_app.add_handler(CommandHandler("update_price", update_one_price_command))
