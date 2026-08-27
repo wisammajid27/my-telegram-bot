@@ -774,7 +774,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "quick_calc":
         context.user_data['step'] = "quick_calc"
-        await query.message.edit_text("🧮 **قسم الحساب السريع**\n\nأدخل تاريخ الميلاد مباشرة لحساب السعر فوراً:\nمثال: `15-05-1995` أو `15/05/1995` أو `15.05.1995`")
+        await query.message.edit_text(
+            "🧮 **قسم الحساب السريع**\n\n"
+            "أدخل اسم الشخص + تاريخ الميلاد لحساب السعر فوراً:\n"
+            "مثال: `أحمد محمد 15-05-1995` أو `أحمد محمد 15/05/1995` أو `أحمد محمد 15.05.1995`"
+        )
 
     elif data == "new_family":
         context.user_data['step'] = "create_family"
@@ -1094,8 +1098,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif step == "quick_calc":
         try:
-            dob = parse_birth_date(text)
-            birth_display = normalize_birth_date(text)
+            name, birth_date_raw = text.rsplit(maxsplit=1)
+            name = name.strip()
+            if not name:
+                raise ValueError("name required")
+
+            dob = parse_birth_date(birth_date_raw)
+            birth_display = normalize_birth_date(birth_date_raw)
             today = date.today()
             age = calculate_railway_age(dob, today)
             
@@ -1113,7 +1122,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             dest_name = context.user_data.get('selected_dest', 'غير محددة')
             if age < 7:
                 response = f"📍 **الوجهة:** {dest_name}\n\n📊 **نتيجة الحساب**\n\n"
-                response += f"👶 زبون سريع | {birth_display} | العمر: {age} | **مجاناً** (لا يحتاج تذكرة)\n\n"
+                response += f"👶 {name} | {birth_display} | العمر: {age} | **مجاناً** (لا يحتاج تذكرة)\n\n"
                 response += f"💰 **المجموع الكلي: 0 ليرة تركي**"
             else:
                 if 7 <= age <= 12:
@@ -1130,7 +1139,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 final_price = price + OFFICE_PROFIT
                 
                 response = f"📍 **الوجهة:** {dest_name}\n\n📊 **نتيجة الحساب**\n\n"
-                response += f"👤 زبون سريع | {birth_display} | العمر: {age} | **{final_price}** ليرة\n\n"
+                response += f"👤 {name} | {birth_display} | العمر: {age} | **{final_price}** ليرة\n\n"
                 response += f"💰 **المجموع الكلي: {final_price} ليرة تركي**"
             
             keyboard = [
@@ -1141,7 +1150,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(response, reply_markup=reply_markup, parse_mode='Markdown')
             
         except ValueError:
-            await update.message.reply_text("❌ التنسيق خاطئ! يرجى إدخال التاريخ بالطريقة التالية:\nمثال: `15-05-1995` أو `15/05/1995`")
+            await update.message.reply_text(
+                "❌ التنسيق خاطئ!\n"
+                "يرجى إدخال **اسم الشخص + تاريخ الميلاد** بهذا الشكل:\n"
+                "مثال: `أحمد محمد 15-05-1995` أو `أحمد محمد 15/05/1995`"
+            , parse_mode='Markdown')
 
     elif step == "create_family":
         family_id = create_family(user_id, text)
