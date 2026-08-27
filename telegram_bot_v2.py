@@ -773,12 +773,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.edit_text("👨‍👩‍👧‍👦 **اختر العائلة أو اختر الحساب السريع**:", reply_markup=reply_markup, parse_mode='Markdown')
 
     elif data == "quick_calc":
+        # إذا كان الزر مضغوطاً من رسالة نتيجة سابقة → لا نمسح القائمة ونرسل برومبت جديداً
+        # حتى تبقى النتيجة القديمة ظاهرة في الشات
+        was_already_quick = context.user_data.get('step') == "quick_calc"
+        if not was_already_quick:
+            context.user_data['quick_passengers'] = []
         context.user_data['step'] = "quick_calc"
-        await query.message.edit_text(
+        prompt_text = (
             "🧮 **قسم الحساب السريع**\n\n"
             "أدخل اسم الشخص + تاريخ الميلاد لحساب السعر فوراً:\n"
             "مثال: `أحمد محمد 15-05-1995` أو `أحمد محمد 15/05/1995` أو `أحمد محمد 15.05.1995`"
         )
+        if was_already_quick:
+            await query.message.reply_text(prompt_text)
+        else:
+            await query.message.edit_text(prompt_text)
 
     elif data == "new_family":
         context.user_data['step'] = "create_family"
@@ -993,6 +1002,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "back_to_family_list":
         context.user_data['step'] = "choose_family"
+        context.user_data.pop('quick_passengers', None)  # مسح نتائج الحساب السريع عند العودة
         families = get_user_families(user_id)
         keyboard = [[InlineKeyboardButton(f"👪 {f['family_name']}", callback_data=f"family_{f['id']}")] for f in families]
         keyboard.append([InlineKeyboardButton("🧮 حساب سريع بدون عائلة", callback_data="quick_calc")])
@@ -1120,10 +1130,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "+65": fare['price_65_plus'],
             }
             dest_name = context.user_data.get('selected_dest', 'غير محددة')
+
+            # حساب السعر لهذا الشخص
             if age < 7:
-                response = f"📍 **الوجهة:** {dest_name}\n\n📊 **نتيجة الحساب**\n\n"
-                response += f"👶 {name} | {birth_display} | العمر: {age} | **مجاناً** (لا يحتاج تذكرة)\n\n"
-                response += f"💰 **المجموع الكلي: 0 ليرة تركي**"
+                line = f"👶 {name} | {birth_display} | العمر: {age} | **مجاناً** (لا يحتاج تذكرة)"
+                contrib = 0
             else:
                 if 7 <= age <= 12:
                     price = rules.get("7-12", price_base)
@@ -1135,12 +1146,23 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     price = rules.get("+65", price_base)
                 else:
                     price = price_base
-                
                 final_price = price + OFFICE_PROFIT
-                
-                response = f"📍 **الوجهة:** {dest_name}\n\n📊 **نتيجة الحساب**\n\n"
-                response += f"👤 {name} | {birth_display} | العمر: {age} | **{final_price}** ليرة\n\n"
-                response += f"💰 **المجموع الكلي: {final_price} ليرة تركي**"
+                line = f"👤 {name} | {birth_display} | العمر: {age} | **{final_price}** ليرة"
+                contrib = final_price
+
+            # إضافة إلى القائمة المتراكمة
+            passengers = context.user_data.setdefault('quick_passengers', [])
+            passengers.append({'line': line, 'price': contrib})
+
+            # بناء الرسالة الكاملة بكل النتائج السابقة + الجديدة
+            results_text = "\n".join(p['line'] for p in passengers)
+            grand_total = sum(p['price'] for p in passengers)
+            response = (
+                f"📍 **الوجهة:** {dest_name}\n\n"
+                f"📊 **نتيجة الحساب**\n\n"
+                f"{results_text}\n\n"
+                f"💰 **المجموع الكلي: {grand_total} ليرة تركي**"
+            )
             
             keyboard = [
                 [InlineKeyboardButton("🧮 حساب تاريخ آخر", callback_data="quick_calc")],
