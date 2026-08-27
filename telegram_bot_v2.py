@@ -189,6 +189,14 @@ ROUTES = {
         {"price": 610, "times": ["22:17"], "slow": True},
         {"price": 740, "times": ["باقي الاوقات"], "fast": True},
     ],
+    "اسكي شهير - اسطنبول بوستانجة": [
+        {"price": 535, "times": ["01:28"], "slow": True},
+        {"price": 645, "times": ["باقي الاوقات"], "fast": True},
+    ],
+    "اسطنبول بوستانجة - اسكي شهير": [
+        {"price": 535, "times": ["22:59"], "slow": True},
+        {"price": 645, "times": ["باقي الاوقات"], "fast": True},
+    ],
 }
 
 PRICES_RULES = {
