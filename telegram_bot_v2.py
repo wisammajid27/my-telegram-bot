@@ -47,6 +47,10 @@ DB_AVAILABLE = True  # يتحدث تلقائياً حسب حالة الاتصا�
 
 _POOL = None
 _POOL_LOCK = threading.Lock()
+# القواعد المجانية (Neon / Supabase / Render) "تنام" وأول اتصال بعد النوم يتأخر
+DB_CONNECT_TIMEOUT = int(os.getenv("DB_CONNECT_TIMEOUT", "15"))
+LAST_DB_ERROR = None       # آخر سبب لفشل الاتصال (يظهر في /dbstatus)
+LAST_DB_ERROR_AT = None
 
 def _get_pool():
     """مجمع اتصالات بدل فتح اتصال SSL جديد مع كل استعلام."""
@@ -55,7 +59,7 @@ def _get_pool():
         with _POOL_LOCK:
             if _POOL is None:
                 _POOL = pg_pool.ThreadedConnectionPool(
-                    1, 5, DATABASE_URL, sslmode=DB_SSLMODE, connect_timeout=5
+                    1, 5, DATABASE_URL, sslmode=DB_SSLMODE, connect_timeout=DB_CONNECT_TIMEOUT
                 )
     return _POOL
 
@@ -82,17 +86,25 @@ def get_db():
     ملاحظة: الأخطاء اللي تصير داخل بلوك with (بعد نجاح الاتصال) ترتفع للمستدعي كما هي،
     ولا تُعامل كأن القاعدة غير متاحة.
     """
-    global DB_AVAILABLE
+    global DB_AVAILABLE, LAST_DB_ERROR, LAST_DB_ERROR_AT
     if not DATABASE_URL:
         DB_AVAILABLE = False
+        LAST_DB_ERROR = "DATABASE_URL غير مضبوط في متغيرات البيئة"
         yield None
         return
 
-    try:
-        pool, conn = _acquire_connection()
-    except Exception as e:
+    conn = None
+    for attempt in range(2):  # محاولة ثانية تلقائية (مفيدة لما القاعدة تصحى من النوم)
+        try:
+            pool, conn = _acquire_connection()
+            break
+        except Exception as e:
+            LAST_DB_ERROR = f"{type(e).__name__}: {str(e).strip()}"
+            LAST_DB_ERROR_AT = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            logging.warning(f"Database connection attempt {attempt + 1} failed: {LAST_DB_ERROR}")
+    if conn is None:
         DB_AVAILABLE = False
-        logging.warning(f"Database unavailable (will use static data): {e}")
+        logging.warning("Database unavailable (will use static data)")
         yield None
         return
 
@@ -114,6 +126,39 @@ def get_db():
 def db_is_up() -> bool:
     with get_db() as conn:
         return conn is not None
+
+def describe_database_url() -> str:
+    """وصف آمن لرابط القاعدة بدون الباسوورد."""
+    if not DATABASE_URL:
+        return "غير مضبوط ❌"
+    from urllib.parse import urlsplit
+    try:
+        parts = urlsplit(DATABASE_URL)
+        host = parts.hostname or "?"
+        port = parts.port or 5432
+        db_name = (parts.path or "/").lstrip("/") or "?"
+        user = parts.username or "?"
+        return f"{parts.scheme}://{user}:****@{host}:{port}/{db_name}"
+    except Exception:
+        return "مضبوط، لكن صيغته غير مفهومة ⚠️"
+
+def check_database_now():
+    """يفتح اتصالاً جديداً مباشرة (بدون المجمع) ويرجع (نجح؟، تفاصيل)."""
+    if not DATABASE_URL:
+        return False, "DATABASE_URL غير مضبوط في متغيرات البيئة"
+    started = datetime.now()
+    try:
+        conn = psycopg2.connect(DATABASE_URL, sslmode=DB_SSLMODE, connect_timeout=DB_CONNECT_TIMEOUT)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT version()")
+                version = cur.fetchone()[0].split(',')[0]
+        finally:
+            conn.close()
+        seconds = (datetime.now() - started).total_seconds()
+        return True, f"{version} (خلال {seconds:.1f} ثانية)"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {str(e).strip()}"
 
 def init_db():
     try:
@@ -1177,6 +1222,26 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown',
     )
 
+async def dbstatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text(ADMIN_ONLY_TEXT)
+        return
+    await update.message.reply_text("🔎 جارٍ فحص الاتصال بقاعدة البيانات...")
+    import asyncio
+    ok, details = await asyncio.to_thread(check_database_now)
+    lines = [
+        "🩺 حالة قاعدة البيانات",
+        "",
+        f"الرابط: {describe_database_url()}",
+        f"sslmode: {DB_SSLMODE} | مهلة الاتصال: {DB_CONNECT_TIMEOUT} ثانية",
+        "",
+        ("✅ الاتصال ناجح: " if ok else "❌ فشل الاتصال: ") + details,
+    ]
+    if LAST_DB_ERROR:
+        lines += ["", f"آخر خطأ سجّله البوت ({LAST_DB_ERROR_AT or '-'}):", LAST_DB_ERROR]
+    # نص عادي بدون Markdown لأن رسائل الأخطاء فيها رموز تكسر التنسيق
+    await update.message.reply_text("\n".join(lines)[:4000])
+
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for key in ('step', 'pending_import', 'pending_price_updates'):
         context.user_data.pop(key, None)
@@ -1788,6 +1853,7 @@ ADMIN_COMMANDS = [
     BotCommand("add_fare", "إضافة فئة سعر"),
     BotCommand("add_destination", "إضافة وجهة"),
     BotCommand("add_trip", "إضافة رحلة لوجهة"),
+    BotCommand("dbstatus", "فحص الاتصال بقاعدة البيانات"),
 ]
 
 async def post_init(application: Application):
@@ -1812,6 +1878,7 @@ def build_application(token: str) -> Application:
 
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CommandHandler("cancel", cancel_command))
+    bot_app.add_handler(CommandHandler("dbstatus", dbstatus_command))
     bot_app.add_handler(CommandHandler("export", export_command))
     bot_app.add_handler(CommandHandler("import", import_command))
     bot_app.add_handler(CommandHandler("update_prices", update_prices_command))
