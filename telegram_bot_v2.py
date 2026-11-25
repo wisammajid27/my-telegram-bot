@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
 """
 Telegram Bot - Complete Version with PostgreSQL Support (Optimized)
-+ Export / Import (backup & restore) for saved data
 """
 import os
-import re
-import json
 import logging
 import calendar
 import threading
-from io import BytesIO
 from datetime import date, datetime
 from flask import Flask
 from threading import Thread
@@ -18,7 +14,7 @@ import psycopg2
 from psycopg2 import pool as pg_pool
 from psycopg2.extras import DictCursor
 from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile,
+    Update, InlineKeyboardButton, InlineKeyboardMarkup,
     BotCommand, BotCommandScopeChat,
 )
 from customer_backup import install_customer_backup
@@ -820,409 +816,6 @@ def delete_passengers(user_id, family_id, passenger_ids) -> int:
             conn.commit()
             return deleted
 
-# ====================== التصدير والاستيراد ======================
-BACKUP_FORMAT = "ticket_bot_backup"
-BACKUP_VERSION = 1
-MAX_IMPORT_BYTES = 2 * 1024 * 1024
-MAX_IMPORT_FAMILIES = 2000
-MAX_PASSENGERS_PER_FAMILY = 300
-FARE_CODE_RE = re.compile(r"^fare_\d+$")
-
-def _families_with_passengers(cur, family_rows, include_user_id):
-    family_ids = [row['id'] for row in family_rows]
-    passengers_by_family = {}
-    if family_ids:
-        cur.execute('''
-            SELECT family_id, name, birth_date FROM passengers
-            WHERE family_id = ANY(%s) ORDER BY name, id
-        ''', (family_ids,))
-        for row in cur.fetchall():
-            passengers_by_family.setdefault(row['family_id'], []).append(
-                {'name': row['name'], 'birth_date': row['birth_date']}
-            )
-    result = []
-    for row in family_rows:
-        item = {'family_name': row['family_name'], 'passengers': passengers_by_family.get(row['id'], [])}
-        if include_user_id:
-            item = {'user_id': row['user_id'], **item}
-        result.append(item)
-    return result
-
-def build_user_export(user_id):
-    """نسخة عوائل المستخدم فقط. يرجع None إذا القاعدة غير متاحة."""
-    with get_db() as conn:
-        if conn is None:
-            return None
-        with conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute("SELECT id, user_id, family_name FROM families WHERE user_id = %s ORDER BY family_name, id",
-                        (user_id,))
-            families = _families_with_passengers(cur, cur.fetchall(), include_user_id=False)
-    return {
-        'format': BACKUP_FORMAT,
-        'version': BACKUP_VERSION,
-        'type': 'families',
-        'exported_at': datetime.now().isoformat(timespec='seconds'),
-        'families': families,
-    }
-
-def build_full_export():
-    """نسخة كاملة (للمدير): الأسعار + الوجهات والرحلات + عوائل كل المستخدمين."""
-    with get_db() as conn:
-        if conn is None:
-            return None
-        with conn.cursor(cursor_factory=DictCursor) as cur:
-            cur.execute('''
-                SELECT fare_code, base_price, price_7_12, price_13_26, price_60_64, price_65_plus
-                FROM fare_prices ORDER BY base_price, fare_code
-            ''')
-            fare_prices = [dict(row) for row in cur.fetchall()]
-
-            cur.execute("SELECT id, route_name, sort_order FROM travel_routes ORDER BY sort_order, id")
-            routes = [dict(row) for row in cur.fetchall()]
-            cur.execute("SELECT route_id, fare_code, departure_label, service_type FROM route_trips ORDER BY id")
-            trips_by_route = {}
-            for row in cur.fetchall():
-                trips_by_route.setdefault(row['route_id'], []).append({
-                    'fare_code': row['fare_code'],
-                    'departure_label': row['departure_label'],
-                    'service_type': row['service_type'],
-                })
-            routes = [
-                {'route_name': r['route_name'], 'sort_order': r['sort_order'], 'trips': trips_by_route.get(r['id'], [])}
-                for r in routes
-            ]
-
-            cur.execute("SELECT id, user_id, family_name FROM families ORDER BY user_id, family_name, id")
-            families = _families_with_passengers(cur, cur.fetchall(), include_user_id=True)
-    return {
-        'format': BACKUP_FORMAT,
-        'version': BACKUP_VERSION,
-        'type': 'full',
-        'exported_at': datetime.now().isoformat(timespec='seconds'),
-        'fare_prices': fare_prices,
-        'routes': routes,
-        'families': families,
-    }
-
-def backup_to_file(payload, filename):
-    data = json.dumps(payload, ensure_ascii=False, indent=2).encode('utf-8')
-    return InputFile(BytesIO(data), filename=filename)
-
-def _clean_text(value, field, max_len=MAX_NAME_LENGTH, min_len=1):
-    if not isinstance(value, str):
-        raise ValueError(f"الحقل «{field}» يجب أن يكون نصًا")
-    value = value.strip()
-    if not (min_len <= len(value) <= max_len):
-        raise ValueError(f"طول الحقل «{field}» غير صالح: {value[:30]}")
-    return value
-
-def _clean_int(value, field, minimum=0):
-    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-        raise ValueError(f"الحقل «{field}» يجب أن يكون رقمًا صحيحًا ≥ {minimum}")
-    return value
-
-def validate_backup(payload, allow_full: bool, existing_fare_codes=()):
-    """يتحقق من ملف النسخة ويرجع نسخة نظيفة جاهزة للاستيراد، أو يرفع ValueError برسالة واضحة."""
-    if not isinstance(payload, dict) or payload.get('format') != BACKUP_FORMAT:
-        raise ValueError("هذا الملف ليس نسخة احتياطية من هذا البوت")
-    version = payload.get('version')
-    if not isinstance(version, int) or version > BACKUP_VERSION:
-        raise ValueError("إصدار الملف غير مدعوم")
-    backup_type = payload.get('type')
-    if backup_type not in ('families', 'full'):
-        raise ValueError("نوع النسخة غير معروف")
-    if backup_type == 'full' and not allow_full:
-        raise ValueError("هذه نسخة كاملة، واستيرادها مخصص لمدير البوت فقط")
-
-    families_raw = payload.get('families', [])
-    if not isinstance(families_raw, list):
-        raise ValueError("قائمة العوائل غير صالحة")
-    if len(families_raw) > MAX_IMPORT_FAMILIES:
-        raise ValueError(f"عدد العوائل أكبر من الحد المسموح ({MAX_IMPORT_FAMILIES})")
-
-    families = []
-    for fam in families_raw:
-        if not isinstance(fam, dict):
-            raise ValueError("بيانات عائلة غير صالحة")
-        family_name = _clean_text(fam.get('family_name'), 'اسم العائلة')
-        passengers_raw = fam.get('passengers', [])
-        if not isinstance(passengers_raw, list) or len(passengers_raw) > MAX_PASSENGERS_PER_FAMILY:
-            raise ValueError(f"قائمة أفراد العائلة «{family_name}» غير صالحة")
-        passengers = []
-        for p in passengers_raw:
-            if not isinstance(p, dict):
-                raise ValueError(f"بيانات فرد غير صالحة في عائلة «{family_name}»")
-            name = _clean_text(p.get('name'), 'اسم الفرد')
-            try:
-                birth_date = normalize_birth_date(p.get('birth_date', ''))
-            except ValueError:
-                raise ValueError(f"تاريخ ميلاد غير صالح للفرد «{name}» في عائلة «{family_name}»")
-            passengers.append({'name': name, 'birth_date': birth_date})
-        item = {'family_name': family_name, 'passengers': passengers}
-        if backup_type == 'full':
-            item['user_id'] = _clean_int(fam.get('user_id'), 'user_id', minimum=1)
-        families.append(item)
-
-    clean = {'type': backup_type, 'families': families, 'fare_prices': [], 'routes': []}
-    if backup_type == 'families':
-        return clean
-
-    fare_codes = set(existing_fare_codes)
-    for fare in payload.get('fare_prices', []) or []:
-        if not isinstance(fare, dict):
-            raise ValueError("بيانات سعر غير صالحة")
-        code = fare.get('fare_code')
-        if not isinstance(code, str) or not FARE_CODE_RE.match(code):
-            raise ValueError(f"رمز فئة غير صالح: {code}")
-        values = {k: _clean_int(fare.get(k), k) for k in
-                  ('base_price', 'price_7_12', 'price_13_26', 'price_60_64', 'price_65_plus')}
-        if values['base_price'] == 0:
-            raise ValueError(f"السعر الكامل لفئة {code} يجب أن يكون أكبر من صفر")
-        clean['fare_prices'].append({'fare_code': code, **values})
-        fare_codes.add(code)
-
-    for route in payload.get('routes', []) or []:
-        if not isinstance(route, dict):
-            raise ValueError("بيانات وجهة غير صالحة")
-        route_name = _clean_text(route.get('route_name'), 'اسم الوجهة', min_len=3)
-        sort_order = route.get('sort_order', 0)
-        if isinstance(sort_order, bool) or not isinstance(sort_order, int):
-            sort_order = 0
-        trips = []
-        for trip in route.get('trips', []) or []:
-            if not isinstance(trip, dict):
-                raise ValueError(f"بيانات رحلة غير صالحة في «{route_name}»")
-            code = trip.get('fare_code')
-            if code not in fare_codes:
-                raise ValueError(f"الرحلة في «{route_name}» تستخدم فئة سعر غير موجودة: {code}")
-            service_type = trip.get('service_type')
-            if service_type not in SERVICE_TYPES:
-                raise ValueError(f"نوع قطار غير صالح في «{route_name}»")
-            label = _clean_text(trip.get('departure_label'), 'وقت الرحلة', max_len=50)
-            trips.append({'fare_code': code, 'departure_label': label, 'service_type': service_type})
-        clean['routes'].append({'route_name': route_name, 'sort_order': sort_order, 'trips': trips})
-    return clean
-
-def import_summary(clean) -> str:
-    passengers = sum(len(f['passengers']) for f in clean['families'])
-    lines = [f"👪 العوائل: {len(clean['families'])}", f"👤 الأفراد: {passengers}"]
-    if clean['type'] == 'full':
-        trips = sum(len(r['trips']) for r in clean['routes'])
-        users = len({f['user_id'] for f in clean['families']})
-        lines += [
-            f"👥 المستخدمون: {users}",
-            f"💰 فئات الأسعار: {len(clean['fare_prices'])}",
-            f"🗺️ الوجهات: {len(clean['routes'])}",
-            f"🚆 الرحلات: {trips}",
-        ]
-    return "\n".join(lines)
-
-def apply_import(target_user_id, clean):
-    """يطبّق الاستيراد كمعاملة واحدة (يا ينجح كله يا ما يتغير شي).
-
-    - العوائل تُدمج: إذا عائلة بنفس الاسم موجودة نضيف لها الأفراد الناقصين فقط.
-    - الفرد المكرر (نفس الاسم ونفس تاريخ الميلاد) يتم تجاهله.
-    - في النسخة الكاملة: أسعار الملف تستبدل الأسعار الحالية، والوجهات والرحلات الناقصة تُضاف.
-    يرجع قاموس إحصائيات، أو None إذا القاعدة غير متاحة.
-    """
-    stats = {'families_new': 0, 'passengers_new': 0, 'passengers_skipped': 0,
-             'fares': 0, 'routes_new': 0, 'trips_new': 0}
-    now = datetime.now().isoformat()
-    with get_db() as conn:
-        if conn is None:
-            return None
-        with conn.cursor() as cur:
-            if clean['type'] == 'full':
-                for fare in clean['fare_prices']:
-                    cur.execute('''
-                        INSERT INTO fare_prices
-                            (fare_code, base_price, price_7_12, price_13_26, price_60_64, price_65_plus, updated_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (fare_code) DO UPDATE SET
-                            base_price = EXCLUDED.base_price, price_7_12 = EXCLUDED.price_7_12,
-                            price_13_26 = EXCLUDED.price_13_26, price_60_64 = EXCLUDED.price_60_64,
-                            price_65_plus = EXCLUDED.price_65_plus, updated_at = EXCLUDED.updated_at
-                    ''', (fare['fare_code'], fare['base_price'], fare['price_7_12'], fare['price_13_26'],
-                          fare['price_60_64'], fare['price_65_plus'], now))
-                    stats['fares'] += 1
-
-                for route in clean['routes']:
-                    cur.execute('''
-                        INSERT INTO travel_routes (route_name, sort_order, created_at)
-                        VALUES (%s, %s, %s)
-                        ON CONFLICT (route_name) DO NOTHING
-                        RETURNING id
-                    ''', (route['route_name'], route['sort_order'], now))
-                    row = cur.fetchone()
-                    if row:
-                        route_id = row[0]
-                        stats['routes_new'] += 1
-                    else:
-                        cur.execute("SELECT id FROM travel_routes WHERE route_name = %s", (route['route_name'],))
-                        route_id = cur.fetchone()[0]
-                    for trip in route['trips']:
-                        cur.execute('''
-                            INSERT INTO route_trips (route_id, fare_code, departure_label, service_type, created_at)
-                            VALUES (%s, %s, %s, %s, %s)
-                            ON CONFLICT (route_id, fare_code, departure_label, service_type) DO NOTHING
-                            RETURNING id
-                        ''', (route_id, trip['fare_code'], trip['departure_label'], trip['service_type'], now))
-                        if cur.fetchone():
-                            stats['trips_new'] += 1
-
-            for fam in clean['families']:
-                owner_id = fam['user_id'] if clean['type'] == 'full' else target_user_id
-                cur.execute("SELECT id FROM families WHERE user_id = %s AND family_name = %s ORDER BY id LIMIT 1",
-                            (owner_id, fam['family_name']))
-                row = cur.fetchone()
-                if row:
-                    family_id = row[0]
-                else:
-                    cur.execute("INSERT INTO families (user_id, family_name, created_at) VALUES (%s, %s, %s) RETURNING id",
-                                (owner_id, fam['family_name'], now))
-                    family_id = cur.fetchone()[0]
-                    stats['families_new'] += 1
-
-                cur.execute("SELECT name, birth_date FROM passengers WHERE family_id = %s", (family_id,))
-                existing = {(r[0], r[1]) for r in cur.fetchall()}
-                for p in fam['passengers']:
-                    key = (p['name'], p['birth_date'])
-                    if key in existing:
-                        stats['passengers_skipped'] += 1
-                        continue
-                    cur.execute('''
-                        INSERT INTO passengers (family_id, user_id, name, birth_date, created_at)
-                        VALUES (%s, %s, %s, %s, %s)
-                    ''', (family_id, owner_id, p['name'], p['birth_date'], now))
-                    existing.add(key)
-                    stats['passengers_new'] += 1
-            conn.commit()
-    return stats
-
-def import_stats_text(stats, backup_type) -> str:
-    lines = [
-        "✅ *تم الاستيراد بنجاح*\n",
-        f"👪 عوائل جديدة: {stats['families_new']}",
-        f"👤 أفراد جدد: {stats['passengers_new']}",
-    ]
-    if stats['passengers_skipped']:
-        lines.append(f"↩️ أفراد موجودون مسبقًا (تم تجاهلهم): {stats['passengers_skipped']}")
-    if backup_type == 'full':
-        lines += [
-            f"💰 فئات أسعار محدّثة: {stats['fares']}",
-            f"🗺️ وجهات جديدة: {stats['routes_new']}",
-            f"🚆 رحلات جديدة: {stats['trips_new']}",
-        ]
-    return "\n".join(lines)
-
-def export_filename(prefix):
-    return f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M')}.json"
-
-async def send_user_export(message, user_id):
-    payload = build_user_export(user_id)
-    if payload is None:
-        await message.reply_text("⚠️ قاعدة البيانات غير متاحة حالياً، حاول لاحقاً.")
-        return
-    if not payload['families']:
-        await message.reply_text("ℹ️ لا توجد عوائل محفوظة لتصديرها.")
-        return
-    passengers = sum(len(f['passengers']) for f in payload['families'])
-    await message.reply_document(
-        document=backup_to_file(payload, export_filename("families")),
-        caption=(f"📦 نسخة العوائل\n👪 {len(payload['families'])} عائلة | 👤 {passengers} فرد\n\n"
-                 "احتفظ بهذا الملف، ويمكنك إرجاعه في أي وقت عبر /import"),
-    )
-
-async def send_full_export(message):
-    payload = build_full_export()
-    if payload is None:
-        await message.reply_text("⚠️ قاعدة البيانات غير متاحة حالياً، حاول لاحقاً.")
-        return
-    passengers = sum(len(f['passengers']) for f in payload['families'])
-    trips = sum(len(r['trips']) for r in payload['routes'])
-    await message.reply_document(
-        document=backup_to_file(payload, export_filename("full_backup")),
-        caption=(f"🗄️ نسخة احتياطية كاملة\n"
-                 f"💰 {len(payload['fare_prices'])} فئة سعر | 🗺️ {len(payload['routes'])} وجهة | 🚆 {trips} رحلة\n"
-                 f"👪 {len(payload['families'])} عائلة | 👤 {passengers} فرد"),
-    )
-
-async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if is_admin(user_id):
-        keyboard = [
-            [InlineKeyboardButton("👪 تصدير عوائلي فقط", callback_data="export_mine")],
-            [InlineKeyboardButton("🗄️ نسخة احتياطية كاملة", callback_data="export_full")],
-        ]
-        await update.message.reply_text("📦 ماذا تريد أن تصدّر؟", reply_markup=InlineKeyboardMarkup(keyboard))
-        return
-    await send_user_export(update.message, user_id)
-
-async def import_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not db_is_up():
-        await update.message.reply_text("⚠️ قاعدة البيانات غير متاحة حالياً، لا يمكن الاستيراد الآن.")
-        return
-    context.user_data.pop('pending_import', None)
-    context.user_data['step'] = 'await_import'
-    text = (
-        "📥 *استيراد البيانات*\n\n"
-        "أرسل الآن ملف النسخة (`.json`) الذي حصلت عليه من /export.\n\n"
-        "• العوائل الموجودة بنفس الاسم سيُضاف إليها الأفراد الناقصون فقط.\n"
-        "• الأفراد المكررون (نفس الاسم وتاريخ الميلاد) سيتم تجاهلهم.\n"
-        "• لن يُحذف أي شيء من بياناتك الحالية."
-    )
-    if is_admin(update.effective_user.id):
-        text += "\n\n🛡️ يمكنك أيضاً إرسال نسخة كاملة؛ أسعارها ستستبدل الأسعار الحالية."
-    text += "\n\nللإلغاء أرسل /cancel"
-    await update.message.reply_text(text, parse_mode='Markdown')
-
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if context.user_data.get('step') != 'await_import':
-        await update.message.reply_text("ℹ️ لاستيراد ملف نسخة احتياطية استخدم /import أولاً.")
-        return
-
-    doc = update.message.document
-    file_name = (doc.file_name or "").lower()
-    if not file_name.endswith('.json'):
-        await update.message.reply_text("❌ يجب أن يكون الملف بصيغة .json")
-        return
-    if doc.file_size and doc.file_size > MAX_IMPORT_BYTES:
-        await update.message.reply_text("❌ حجم الملف أكبر من الحد المسموح (2 ميغابايت).")
-        return
-
-    try:
-        tg_file = await doc.get_file()
-        raw = bytes(await tg_file.download_as_bytearray())
-        if len(raw) > MAX_IMPORT_BYTES:
-            raise ValueError("حجم الملف أكبر من الحد المسموح (2 ميغابايت)")
-        try:
-            payload = json.loads(raw.decode('utf-8-sig'))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            raise ValueError("الملف تالف أو ليس ملف JSON صالحاً")
-        clean = validate_backup(payload, allow_full=is_admin(user_id),
-                                existing_fare_codes=get_fare_prices().keys())
-    except ValueError as error:
-        await update.message.reply_text(f"❌ {error}\n\nأرسل ملفاً آخر، أو /cancel للإلغاء.")
-        return
-
-    if not clean['families'] and clean['type'] == 'families':
-        await update.message.reply_text("ℹ️ الملف لا يحتوي على أي عائلة.")
-        return
-
-    context.user_data['pending_import'] = clean
-    context.user_data['step'] = 'confirm_import'
-    title = "🗄️ نسخة كاملة" if clean['type'] == 'full' else "👪 نسخة عوائل"
-    keyboard = [
-        [InlineKeyboardButton("✅ تأكيد الاستيراد", callback_data="import_confirm")],
-        [InlineKeyboardButton("✖️ إلغاء", callback_data="import_cancel")],
-    ]
-    await update.message.reply_text(
-        f"📋 *معاينة الاستيراد* ({title})\n\n{import_summary(clean)}\n\nهل تريد المتابعة؟",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='Markdown',
-    )
-
 async def dbstatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text(ADMIN_ONLY_TEXT)
@@ -1244,7 +837,7 @@ async def dbstatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines)[:4000])
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    for key in ('step', 'pending_import', 'pending_price_updates'):
+    for key in ('step', 'pending_price_updates'):
         context.user_data.pop(key, None)
     await update.message.reply_text("تم الإلغاء. أرسل /start للبدء من جديد.")
 
@@ -1333,42 +926,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data or ""
     ud = context.user_data
 
-    # ---------- التصدير والاستيراد ----------
-    if data == "export_mine":
-        await send_user_export(query.message, user_id)
-
-    elif data == "export_full":
-        if not is_admin(user_id):
-            return
-        await send_full_export(query.message)
-
-    elif data == "import_confirm":
-        clean = ud.get('pending_import')
-        if not clean:
-            await safe_edit(query, "⚠️ انتهت جلسة الاستيراد. استخدم /import مرة أخرى.")
-            return
-        if clean['type'] == 'full' and not is_admin(user_id):
-            return
-        try:
-            stats = apply_import(user_id, clean)
-        except Exception as error:
-            logging.exception(f"Import failed: {error}")
-            await safe_edit(query, "❌ فشل الاستيراد ولم يتم تغيير أي بيانات. حاول مرة أخرى.")
-            return
-        if stats is None:
-            await safe_edit(query, "⚠️ قاعدة البيانات غير متاحة حالياً. لم يتم الاستيراد.")
-            return
-        ud.pop('pending_import', None)
-        ud.pop('step', None)
-        await safe_edit(query, import_stats_text(stats, clean['type']), parse_mode='Markdown')
-
-    elif data == "import_cancel":
-        ud.pop('pending_import', None)
-        ud.pop('step', None)
-        await safe_edit(query, "تم إلغاء الاستيراد.")
-
     # ---------- أوامر المدير ----------
-    elif data == "confirm_price_updates":
+    if data == "confirm_price_updates":
         if not is_admin(user_id):
             return
         updates = ud.get('pending_price_updates')
@@ -1832,20 +1391,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown',
         )
 
-    elif step == "await_import":
-        await update.message.reply_text("📎 أرسل ملف النسخة الاحتياطية (.json) كملف، أو /cancel للإلغاء.")
-
-    elif step == "confirm_import":
-        await update.message.reply_text("👆 اضغط «تأكيد الاستيراد» أو «إلغاء» في الرسالة السابقة، أو أرسل /cancel")
-
     else:
         await update.message.reply_text("⚠️ استخدم الأزرار أعلاه، أو أرسل /start لعرض الوجهات.")
 
 # ====================== تشغيل البوت والخدمات ======================
 USER_COMMANDS = [
     BotCommand("start", "عرض الوجهات"),
-    BotCommand("export", "تصدير العوائل المحفوظة"),
-    BotCommand("import", "استيراد نسخة احتياطية"),
     BotCommand("cancel", "إلغاء العملية الحالية"),
 ]
 ADMIN_COMMANDS = [
@@ -1881,8 +1432,6 @@ def build_application(token: str) -> Application:
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CommandHandler("cancel", cancel_command))
     bot_app.add_handler(CommandHandler("dbstatus", dbstatus_command))
-    bot_app.add_handler(CommandHandler("export", export_command))
-    bot_app.add_handler(CommandHandler("import", import_command))
     bot_app.add_handler(CommandHandler("update_prices", update_prices_command))
     bot_app.add_handler(CommandHandler("update_price", update_one_price_command))
     bot_app.add_handler(CommandHandler("add_destination", add_destination_command))
@@ -1891,7 +1440,6 @@ def build_application(token: str) -> Application:
     bot_app.add_handler(CallbackQueryHandler(handle_callback))
     install_customer_backup(bot_app, ADMIN_USER_ID)
     # الرسائل المعدّلة ما إلها update.message، فنستقبل الرسائل الجديدة فقط
-    bot_app.add_handler(MessageHandler(filters.Document.ALL & filters.UpdateType.MESSAGE, handle_document))
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.UpdateType.MESSAGE, handle_text))
     return bot_app
 
