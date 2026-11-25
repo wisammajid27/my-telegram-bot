@@ -33,20 +33,20 @@ def connect():
     return psycopg2.connect(
         url, sslmode=os.getenv("DB_SSLMODE", "require"),
         connect_timeout=int(os.getenv("DB_CONNECT_TIMEOUT", "15")),
-        options="-c statement_timeout=30000 -c lock_timeout=5000",
     )
 
 
 def export_customers():
     snapshot = {"format": FORMAT, "created_at": datetime.now(timezone.utc).isoformat()}
-    with closing(connect()) as conn:
-        conn.set_session(isolation_level="REPEATABLE READ", readonly=True)
-        with conn, conn.cursor() as cursor:
-            for table, columns in TABLES.items():
-                cursor.execute(f"SELECT {columns} FROM {table} ORDER BY id")
-                snapshot[table] = [
-                    dict(zip(columns.split(", "), row)) for row in cursor
-                ]
+    with closing(connect()) as conn, conn, conn.cursor() as cursor:
+        cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        cursor.execute("SET LOCAL statement_timeout = '30s'")
+        cursor.execute("SET LOCAL lock_timeout = '5s'")
+        for table, columns in TABLES.items():
+            cursor.execute(f"SELECT {columns} FROM {table} ORDER BY id")
+            snapshot[table] = [
+                dict(zip(columns.split(", "), row)) for row in cursor
+            ]
     if not any(snapshot[table] for table in TABLES):
         raise BackupError("جداول الزبائن فارغة.")
     data = json.dumps(snapshot, ensure_ascii=False).encode()
@@ -91,6 +91,8 @@ def parse_backup(data):
 def import_customers(data):
     snapshot = parse_backup(data)
     with closing(connect()) as conn, conn, conn.cursor() as cursor:
+        cursor.execute("SET LOCAL statement_timeout = '30s'")
+        cursor.execute("SET LOCAL lock_timeout = '5s'")
         cursor.execute("LOCK TABLE families, passengers IN ACCESS EXCLUSIVE MODE")
         cursor.execute("SELECT EXISTS (SELECT 1 FROM families) OR EXISTS (SELECT 1 FROM passengers)")
         if cursor.fetchone()[0]:
@@ -141,6 +143,13 @@ def install_customer_backup(app, admin_id):
                 data = await asyncio.to_thread(export_customers)
             except (psycopg2.Error, BackupError) as exc:
                 reason = str(exc) if isinstance(exc, BackupError) else "تعذر قراءة قاعدة البيانات."
+                if isinstance(exc, psycopg2.Error):
+                    logging.warning("Customer backup database error: %s (%s)",
+                                    type(exc).__name__, exc.pgcode or "no SQLSTATE")
+                    if exc.pgcode == "42P01":
+                        reason = "جداول الزبائن غير موجودة في قاعدة البيانات المتصلة."
+                    elif isinstance(exc, psycopg2.OperationalError) and not exc.pgcode:
+                        reason = "تعذّر الاتصال بقاعدة البيانات. استخدم /dbstatus للفحص."
                 if not allow_previous:
                     raise BackupError(reason) from exc
                 try:
