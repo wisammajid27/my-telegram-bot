@@ -21,6 +21,7 @@ from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile,
     BotCommand, BotCommandScopeChat,
 )
+from customer_backup import install_customer_backup
 from telegram.error import BadRequest
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
@@ -1848,6 +1849,7 @@ USER_COMMANDS = [
     BotCommand("cancel", "إلغاء العملية الحالية"),
 ]
 ADMIN_COMMANDS = [
+    BotCommand("backup_customers", "نسخ بيانات كل الزبائن"),
     BotCommand("update_prices", "تحديث الأسعار دفعة واحدة"),
     BotCommand("update_price", "تحديث فئة سعر واحدة"),
     BotCommand("add_fare", "إضافة فئة سعر"),
@@ -1887,6 +1889,7 @@ def build_application(token: str) -> Application:
     bot_app.add_handler(CommandHandler("add_trip", add_trip_command))
     bot_app.add_handler(CommandHandler("add_fare", add_fare_command))
     bot_app.add_handler(CallbackQueryHandler(handle_callback))
+    install_customer_backup(bot_app, ADMIN_USER_ID)
     # الرسائل المعدّلة ما إلها update.message، فنستقبل الرسائل الجديدة فقط
     bot_app.add_handler(MessageHandler(filters.Document.ALL & filters.UpdateType.MESSAGE, handle_document))
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.UpdateType.MESSAGE, handle_text))

@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+families.db
+.env
+customer-data/
